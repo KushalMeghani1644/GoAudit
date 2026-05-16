@@ -2,24 +2,21 @@
 
 > Go audit your `npm installs` and `curl | sh`'s before they audit you.
 
-## What it does
+## What it does?
 
-Runs your install command inside a sandbox and reports what it 
-actually did: credential reads, network calls, filesystem writes.
+Runs the given npm install or curl | sh command in a sandbox and checks
+what it actually did? Whether it read AWS credential, Github credential, SSH keys, etc.
 
-Unlike static analysis tools (Socket, npq), GoAudit executes the 
-command and observes real runtime behavior.
+Unlike static analysis tools (Socket, npq), GoAudit executes the command and observes real runtime behavior.
 
 ## Demo
 
-# Catches credential theft:
 ```zsh
 $ goaudit scan "cat ~/.aws/credentials"
 [CRITICAL] File Read: /root/.aws/credentials
 Verdict: CRITICAL ✗
-```
 
-# Transparent network reporting:
+
 ```zsh
 $ goaudit scan "npm install lodash"
 [WARNING] Network: registry.npmjs.org (104.16.2.34:443)
