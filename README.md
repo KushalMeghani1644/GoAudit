@@ -1,29 +1,22 @@
 # GoAudit
 
-> Go audit your `npm installs` and `curl | sh`'s before they audit you.
-
-## What it does?
-
-Runs the given npm install or curl | sh command in a sandbox and checks
-what it actually did? Whether it read AWS credential, Github credential, SSH keys, etc.
-
-Unlike static analysis tools (Socket, npq), GoAudit executes the command and observes real runtime behavior.
+A tool that checks whether a npm install or a curl | sh is malicious or not? 
 
 ## Demo
+
+GoAudit checks for whether any important files like AWS credentials, Github credentials, SSH keys, etc. were reador not by running the commands in a sandbox.
 
 ```zsh
 $ goaudit scan "cat ~/.aws/credentials"
 [CRITICAL] File Read: /root/.aws/credentials
 Verdict: CRITICAL ✗
 
-
-```zsh
 $ goaudit scan "npm install lodash"
 [WARNING] Network: registry.npmjs.org (104.16.2.34:443)
 Verdict: WARNING
 ```
 
-## Install
+## Install 
 
 ```zsh
 go install github.com/yourusername/goaudit@latest
@@ -34,10 +27,10 @@ go install github.com/yourusername/goaudit@latest
 ```zsh
 goaudit scan "npm install <package>"
 goaudit scan "curl -fsSL https://example.com/install.sh | sh"
-goaudit scan "npm install <package>" --ci   # JSON output for CI
+goaudit scan "npm install <package>" --ci   # JSON output
 ```
 
 ## Requirements
 
 - Docker
-- gVisor (optional, recommended for stronger isolation)
+- gVisor (recommended)
