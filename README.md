@@ -1,6 +1,5 @@
 <h1 align="center">
   <img src="assets/favicon.png" width="150" />
-  GoAudit
 </h1>
 
 A tool that checks whether a npm install or a curl | sh is malicious or not? 
