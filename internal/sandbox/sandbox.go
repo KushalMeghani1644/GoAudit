@@ -54,19 +54,60 @@ func (s *Sandbox) EnsureImage(ctx context.Context) error {
 	return nil
 }
 
-func (s *Sandbox) RunCommand(ctx context.Context, targetCmd string) (io.Reader, error) {
+func (s *Sandbox) RunCommand(ctx context.Context, targetCmd, profileName, image string, requiredTools, setupCommands []string) (io.Reader, error) {
+	requiredToolsCheck := ""
+	for _, t := range requiredTools {
+		requiredToolsCheck += fmt.Sprintf("command -v %s >/dev/null 2>&1 || { echo \"GOAUDIT_RUNTIME_ERROR:missing_tool:%s\" >&2; exit 97; }\n", t, t)
+	}
+	setupScript := ""
+	for _, c := range setupCommands {
+		setupScript += c + "\n"
+	}
+
 	script := fmt.Sprintf(`
-apt-get update -qq > /dev/null 2>&1
-apt-get install -y -qq strace > /dev/null 2>&1 || true
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -qq > /dev/null 2>&1 || { echo "GOAUDIT_RUNTIME_ERROR:prep_failed" >&2; exit 98; }
+  apt-get install -y -qq --no-install-recommends strace curl ca-certificates dnsutils > /dev/null 2>&1 || { echo "GOAUDIT_RUNTIME_ERROR:prep_failed" >&2; exit 98; }
+fi
+
+%s
+%s
+
+echo "GOAUDIT_RUNTIME_META:profile=%s;image=%s" >&2
+for tool in node npm pnpm bun bash curl strace; do
+  if command -v "${tool}" >/dev/null 2>&1; then
+    ver="$(${tool} --version 2>/dev/null | head -n1 | tr -d '\r' || true)"
+    if [ -n "${ver}" ]; then
+      echo "GOAUDIT_RUNTIME_META:tool=${tool};version=${ver}" >&2
+    fi
+  fi
+done
 
 mkdir -p ~/.ssh ~/.aws ~/.kube
 echo 'fake-key' > ~/.ssh/id_rsa
 echo 'fake-aws' > ~/.aws/credentials
 echo 'fake-kube' > ~/.kube/config
 echo 'SECRET=fake' > ~/.env
+mkdir -p /workspace
+cd /workspace
 
-strace -s 256 -f -e trace=open,openat,connect -o /dev/stderr %s
-`, targetCmd)
+cat << 'EOF_TARGET_CMD' > /tmp/target.sh
+%s
+EOF_TARGET_CMD
+
+chmod +x /tmp/target.sh
+
+set +e
+strace -s 256 -f -e trace=open,openat,openat2,connect,execve,chmod,fchmod,fchmodat,rename,unlink,unlinkat,setuid,setgid,setreuid,setregid -o /dev/stderr bash /tmp/target.sh
+target_rc=$?
+set -e
+echo "GOAUDIT_TARGET_EXIT:${target_rc}" >&2
+if [ "${target_rc}" -ne 0 ]; then
+  exit 99
+fi
+ `, setupScript, requiredToolsCheck, profileName, image, targetCmd)
 
 	resp, err := s.cli.ContainerCreate(ctx, &container.Config{
 		Image:        s.image,
