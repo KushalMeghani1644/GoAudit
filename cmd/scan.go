@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/KushalMeghani1644/goaudit/internal/analyzer"
 	"github.com/KushalMeghani1644/goaudit/internal/report"
 	"github.com/spf13/cobra"
 )
@@ -17,6 +18,7 @@ var (
 	bunImage       string
 	networkMode    string
 	runAsRoot      bool
+	skipProbe      bool
 )
 
 type scanProfile struct {
@@ -34,8 +36,17 @@ var scanCmd = &cobra.Command{
 		targetCmd := strings.Join(args, " ")
 		profile := inferProfile(targetCmd)
 		reporter := report.NewReporter(ciMode)
+
+		// Extract packages for runtime probe from the install command.
+		var probePackages []string
+		if !skipProbe {
+			probePackages = analyzer.ExtractPackageNamesFromCommand(targetCmd)
+		}
+
 		runScanPipeline(context.Background(), targetCmd, profile, reporter, pipelineOptions{
-			runAsRoot: runAsRoot,
+			runAsRoot:     runAsRoot,
+			probePackages: probePackages,
+			skipProbe:     skipProbe,
 		})
 	},
 }
@@ -79,5 +90,6 @@ func init() {
 	scanCmd.Flags().StringVar(&bunImage, "bun-image", "oven/bun:1", "Bun image used for bun scans")
 	scanCmd.Flags().StringVar(&networkMode, "network", "auto", "Network policy: auto (based on command type), on, or off")
 	scanCmd.Flags().BoolVar(&runAsRoot, "run-as-root", false, "Run the target command as root inside the sandbox (default: non-root)")
+	scanCmd.Flags().BoolVar(&skipProbe, "skip-probe", false, "Skip runtime behavior probe after install")
 	rootCmd.AddCommand(scanCmd)
 }

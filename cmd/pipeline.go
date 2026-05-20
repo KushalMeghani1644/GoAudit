@@ -8,6 +8,7 @@ import (
 
 	"github.com/KushalMeghani1644/goaudit/internal/analyzer"
 	"github.com/KushalMeghani1644/goaudit/internal/parser"
+	"github.com/KushalMeghani1644/goaudit/internal/probe"
 	"github.com/KushalMeghani1644/goaudit/internal/report"
 	"github.com/KushalMeghani1644/goaudit/internal/sandbox"
 )
@@ -19,6 +20,8 @@ type pipelineOptions struct {
 	allowNetwork    bool
 	runAsRoot       bool
 	scanProjectMode bool
+	probePackages   []string
+	skipProbe       bool
 }
 
 func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile, reporter *report.Reporter, opts pipelineOptions) {
@@ -80,6 +83,16 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 		networkEnabled = false
 	}
 
+	// Append runtime probe to the target command if packages are specified.
+	finalCmd := targetCmd
+	if len(opts.probePackages) > 0 && !opts.skipProbe && isNodeProfile(profile.Name) {
+		probeScript := probe.GenerateNodeProbeScript(opts.probePackages, probe.DefaultTimeoutSec)
+		finalCmd = targetCmd + "\n" + probeScript
+		if !ciMode {
+			fmt.Printf("Runtime probe: will import %d package(s) after install\n", len(opts.probePackages))
+		}
+	}
+
 	if !ciMode {
 		fmt.Printf("Pulling sandbox image %s (one-time setup)...\n", profile.Image)
 	}
@@ -117,15 +130,15 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 		if opts.runAsRoot {
 			fmt.Println("Execution user: \033[33mroot\033[0m")
 		} else {
-			fmt.Println("Execution user: \033[32msandbox (uid 1000)\033[0m")
+			fmt.Println("Execution user: \033[32mnon-root (uid 1000)\033[0m")
 		}
 	}
 
 	var logStream io.Reader
 	if opts.projectPath != "" {
-		logStream, err = s.RunProjectCommand(ctx, targetCmd, opts.projectPath, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
+		logStream, err = s.RunProjectCommand(ctx, finalCmd, opts.projectPath, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
 	} else {
-		logStream, err = s.RunCommand(ctx, targetCmd, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
+		logStream, err = s.RunCommand(ctx, finalCmd, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
 	}
 	if err != nil {
 		s.Cleanup(ctx)
@@ -141,6 +154,14 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 
 	s.Cleanup(ctx)
 	reporter.Report(findings)
+}
+
+func isNodeProfile(name string) bool {
+	switch name {
+	case "npm", "pnpm", "bun":
+		return true
+	}
+	return false
 }
 
 func profileForManager(manager string) scanProfile {

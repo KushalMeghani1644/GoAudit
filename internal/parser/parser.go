@@ -34,6 +34,7 @@ var (
 func ParseStream(r io.Reader, reporter *report.Reporter) ([]report.Finding, error) {
 	scanner := bufio.NewScanner(r)
 	var findings []report.Finding
+	probePhase := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -65,6 +66,9 @@ func ParseStream(r io.Reader, reporter *report.Reporter) ([]report.Finding, erro
 		}
 		if strings.Contains(line, "GOAUDIT_RUNTIME_META:") {
 			meta := strings.TrimSpace(line[strings.Index(line, "GOAUDIT_RUNTIME_META:")+len("GOAUDIT_RUNTIME_META:"):])
+			if strings.Contains(meta, "phase=probe") {
+				probePhase = true
+			}
 			f := report.Finding{
 				Severity:   report.SeverityInfo,
 				Type:       "runtime",
@@ -319,6 +323,28 @@ func ParseStream(r io.Reader, reporter *report.Reporter) ([]report.Finding, erro
 			}
 			findings = append(findings, f)
 			reporter.PrintLiveFinding(f)
+		}
+	}
+	// Annotate findings that occurred during the runtime probe phase.
+	if probePhase {
+		// probePhase was set to true partway through; find the metadata marker
+		// and boost confidence of all subsequent non-info findings.
+		probeStart := -1
+		for i, f := range findings {
+			if f.ReasonCode == "RUNTIME_METADATA" && strings.Contains(f.Evidence, "phase=probe") {
+				probeStart = i
+				break
+			}
+		}
+		if probeStart >= 0 {
+			for i := probeStart + 1; i < len(findings); i++ {
+				if findings[i].Severity != report.SeverityInfo {
+					findings[i].Evidence += " [runtime probe]"
+					if findings[i].Confidence < 95 {
+						findings[i].Confidence += 5
+					}
+				}
+			}
 		}
 	}
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/KushalMeghani1644/goaudit/internal/analyzer"
 	"github.com/KushalMeghani1644/goaudit/internal/project"
@@ -14,6 +15,7 @@ var (
 	upgradeMode       string
 	managerOverride   string
 	includeTransitive bool
+	probeAll          bool
 )
 
 // Lifecycle reason codes that are expected and noisy in scan-project mode.
@@ -76,6 +78,35 @@ var scanProjectCmd = &cobra.Command{
 			reporter.PrintLiveFinding(f)
 		}
 
+		// Determine which packages to probe at runtime.
+		var probePackages []string
+		if !skipProbe {
+			if probeAll {
+				probePackages = deps
+			} else {
+				// Probe only packages that had suspicious static findings.
+				suspicious := map[string]bool{}
+				for _, f := range registryFindings {
+					if f.Severity == report.SeverityWarning || f.Severity == report.SeverityCritical {
+						name := extractFindingPackageName(f.Path)
+						if name != "" {
+							suspicious[name] = true
+						}
+					}
+				}
+				for pkg := range suspicious {
+					probePackages = append(probePackages, pkg)
+				}
+				if len(probePackages) == 0 {
+					if !ciMode {
+						fmt.Println("No suspicious packages from registry checks; skipping runtime probe (use --probe-all to probe all deps)")
+					}
+				} else if !ciMode {
+					fmt.Printf("Probing %d suspicious package(s) at runtime\n", len(probePackages))
+				}
+			}
+		}
+
 		profile := profileForManager(proj.Manager)
 		runScanPipeline(context.Background(), installCmd, profile, reporter, pipelineOptions{
 			projectPath:     proj.Root,
@@ -83,8 +114,31 @@ var scanProjectCmd = &cobra.Command{
 			priorFindings:   findings,
 			scanProjectMode: true,
 			runAsRoot:       runAsRoot,
+			probePackages:   probePackages,
+			skipProbe:       skipProbe,
 		})
 	},
+}
+
+// extractFindingPackageName extracts a bare package name from a finding path
+// which may be "pkg@version", "@scope/pkg@version", or just "pkg".
+func extractFindingPackageName(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	// Handle @scope/pkg@version or @scope/pkg
+	if strings.HasPrefix(path, "@") {
+		if idx := strings.LastIndex(path, "@"); idx > 0 {
+			return path[:idx]
+		}
+		return path
+	}
+	// Handle pkg@version
+	if idx := strings.Index(path, "@"); idx > 0 {
+		return path[:idx]
+	}
+	return path
 }
 
 func init() {
@@ -96,6 +150,8 @@ func init() {
 	scanProjectCmd.Flags().StringVar(&bunImage, "bun-image", "oven/bun:1", "Bun image used for bun scans")
 	scanProjectCmd.Flags().StringVar(&networkMode, "network", "auto", "Network policy: auto (based on command type), on, or off")
 	scanProjectCmd.Flags().BoolVar(&runAsRoot, "run-as-root", false, "Run the target command as root inside the sandbox (default: non-root)")
+	scanProjectCmd.Flags().BoolVar(&skipProbe, "skip-probe", false, "Skip runtime behavior probe after install")
+	scanProjectCmd.Flags().BoolVar(&probeAll, "probe-all", false, "Probe all direct dependencies, not just suspicious ones")
 	scanProjectCmd.Flags().StringVar(&upgradeMode, "upgrade-mode", "refresh-lock", "Upgrade strategy: refresh-lock, ncu, or update")
 	scanProjectCmd.Flags().StringVar(&managerOverride, "manager", "", "Force package manager: npm, pnpm, or bun")
 	scanProjectCmd.Flags().BoolVar(&includeTransitive, "include-transitive", false, "Also registry-check packages from package-lock.json")

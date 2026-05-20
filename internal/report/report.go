@@ -89,7 +89,9 @@ func isHardMalicious(f Finding) bool {
 	return f.ReasonCode == "CREDENTIAL_READ" ||
 		f.ReasonCode == "PERSISTENCE_WRITE" ||
 		f.ReasonCode == "REVERSE_SHELL" ||
-		f.ReasonCode == "PRIVILEGE_ESCALATION"
+		f.ReasonCode == "PRIVILEGE_ESCALATION" ||
+		f.ReasonCode == "FILELESS_EXEC" ||
+		f.ReasonCode == "PROCESS_INJECTION"
 }
 
 func reasonWeight(reasonCode string) int {
@@ -97,6 +99,10 @@ func reasonWeight(reasonCode string) int {
 	case "CREDENTIAL_READ", "PERSISTENCE_WRITE", "PRIVILEGE_ESCALATION":
 		return 80
 	case "STAGED_DOWNLOADER", "SUSPICIOUS_EXEC", "SCRIPT_OBFUSCATION":
+		return 55
+	case "FILELESS_EXEC", "PROCESS_INJECTION", "SYMLINK_SENSITIVE_PATH":
+		return 85
+	case "BACKDOOR_LISTENER":
 		return 55
 	case "CURL_PIPE_SHELL":
 		return 35
@@ -132,6 +138,17 @@ func reasonWeight(reasonCode string) int {
 		return 10
 	case "SCRIPT_FETCHED", "RUNTIME_METADATA":
 		return 0
+	// Lifecycle content analysis (from registry script inspection)
+	case "NPM_LIFECYCLE_STAGED_DOWNLOADER", "PNPM_LIFECYCLE_STAGED_DOWNLOADER", "BUN_LIFECYCLE_STAGED_DOWNLOADER":
+		return 70
+	case "NPM_LIFECYCLE_REVERSE_SHELL", "PNPM_LIFECYCLE_REVERSE_SHELL", "BUN_LIFECYCLE_REVERSE_SHELL":
+		return 85
+	case "NPM_LIFECYCLE_CREDENTIAL_READ", "PNPM_LIFECYCLE_CREDENTIAL_READ", "BUN_LIFECYCLE_CREDENTIAL_READ":
+		return 80
+	case "NPM_LIFECYCLE_SCRIPT_OBFUSCATION", "PNPM_LIFECYCLE_SCRIPT_OBFUSCATION", "BUN_LIFECYCLE_SCRIPT_OBFUSCATION":
+		return 60
+	case "NPM_LIFECYCLE_PERSISTENCE_WRITE", "PNPM_LIFECYCLE_PERSISTENCE_WRITE", "BUN_LIFECYCLE_PERSISTENCE_WRITE":
+		return 80
 	default:
 		return 15
 	}

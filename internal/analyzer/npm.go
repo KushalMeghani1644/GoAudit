@@ -316,3 +316,33 @@ func fetchNPMMetadata(client *http.Client, pkg string) (*npmMetadata, error) {
 	}
 	return &meta, nil
 }
+
+// ExtractPackageNamesFromCommand extracts normalized package names from
+// a package manager install/add command string.
+func ExtractPackageNamesFromCommand(command string) []string {
+	type managerOps struct {
+		name string
+		ops  []string
+	}
+	managers := []managerOps{
+		{"npm", []string{"install", "i"}},
+		{"pnpm", []string{"add", "install", "i"}},
+		{"bun", []string{"add"}},
+	}
+	var all []string
+	seen := map[string]struct{}{}
+	for _, m := range managers {
+		for _, spec := range extractInstallSpecs(command, m.name, m.ops) {
+			name := normalizeNPMPackageName(spec)
+			if name == "" || isNonRegistryNpmSpec(spec) {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			all = append(all, name)
+		}
+	}
+	return all
+}
