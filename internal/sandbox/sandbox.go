@@ -143,6 +143,7 @@ done
 %s
 %s
 cat << 'EOF_TARGET_CMD' > /tmp/target.sh
+echo 'GOAUDIT_RUNTIME_META:phase=target' >&2
 %s
 EOF_TARGET_CMD
 chmod +x /tmp/target.sh

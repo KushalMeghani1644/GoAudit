@@ -35,6 +35,7 @@ func ParseStream(r io.Reader, reporter *report.Reporter) ([]report.Finding, erro
 	scanner := bufio.NewScanner(r)
 	var findings []report.Finding
 	probePhase := false
+	targetPhase := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -68,6 +69,9 @@ func ParseStream(r io.Reader, reporter *report.Reporter) ([]report.Finding, erro
 			meta := strings.TrimSpace(line[strings.Index(line, "GOAUDIT_RUNTIME_META:")+len("GOAUDIT_RUNTIME_META:"):])
 			if strings.Contains(meta, "phase=probe") {
 				probePhase = true
+			}
+			if strings.Contains(meta, "phase=target") {
+				targetPhase = true
 			}
 			f := report.Finding{
 				Severity:   report.SeverityInfo,
@@ -201,6 +205,10 @@ func ParseStream(r io.Reader, reporter *report.Reporter) ([]report.Finding, erro
 		if privMatches := privRegex.FindStringSubmatch(line); len(privMatches) > 1 {
 			uid := privMatches[1]
 			if uid != "0" {
+				continue
+			}
+			// Skip setuid(0) from the su/PAM wrapper before the target starts.
+			if !targetPhase {
 				continue
 			}
 			f := report.Finding{

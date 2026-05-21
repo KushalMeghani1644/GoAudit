@@ -61,10 +61,10 @@ func TestEvaluate_ScoringEdgeCases(t *testing.T) {
 		{
 			name: "Score 25 (SUSPICIOUS)",
 			findings: []Finding{
-				{Severity: SeverityWarning, ReasonCode: "NPM_LIFECYCLE_SCRIPTS"}, // 25
+				{Severity: SeverityWarning, ReasonCode: "CURL_PIPE_SHELL"}, // 35 >= 25
 			},
 			expectedVerdict: VerdictSuspicious,
-			expectedScore:   40 + (25 / 2),
+			expectedScore:   40 + (35 / 2),
 		},
 		{
 			name: "Score 79 (SUSPICIOUS)",
@@ -81,11 +81,11 @@ func TestEvaluate_ScoringEdgeCases(t *testing.T) {
 		{
 			name: "Score 80 (MALICIOUS)",
 			findings: []Finding{
-				{Severity: SeverityWarning, ReasonCode: "STAGED_DOWNLOADER"},     // 55
-				{Severity: SeverityWarning, ReasonCode: "NPM_LIFECYCLE_SCRIPTS"}, // 25
+				{Severity: SeverityWarning, ReasonCode: "STAGED_DOWNLOADER"},       // 55
+				{Severity: SeverityWarning, ReasonCode: "CURL_PIPE_SHELL"},         // 35
 			},
 			expectedVerdict: VerdictMalicious,
-			expectedScore:   80, // 55+25 = 80
+			expectedScore:   90, // 55+35 = 90
 		},
 		{
 			name: "Score cap at 100",

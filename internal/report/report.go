@@ -44,11 +44,16 @@ type Report struct {
 }
 
 type Reporter struct {
-	CIMode bool
+	CIMode           bool
+	seenNetworkHosts map[string]int
+	networkDupCount  int
 }
 
 func NewReporter(ciMode bool) *Reporter {
-	return &Reporter{CIMode: ciMode}
+	return &Reporter{
+		CIMode:           ciMode,
+		seenNetworkHosts: make(map[string]int),
+	}
 }
 
 func (r *Reporter) Fatalf(format string, args ...interface{}) {
@@ -71,7 +76,13 @@ func (r *Reporter) PrintLiveFinding(f Finding) {
 			color.Red("[CRITICAL] %s: %s\n", f.Type, f.Path)
 		}
 	} else if f.Severity == SeverityWarning {
-		if f.Type == "network" {
+		if f.Type == "network" && f.ReasonCode == "EXTERNAL_NETWORK" {
+			// Deduplicate network warnings — only print first occurrence per IP.
+			r.seenNetworkHosts[f.IP]++
+			if r.seenNetworkHosts[f.IP] > 1 {
+				r.networkDupCount++
+				return
+			}
 			color.Yellow("[WARNING] Network Connection: %s (%s:%d)\n", f.Host, f.IP, f.Port)
 		} else if f.Type == "command" {
 			color.Yellow("[WARNING] Suspicious Command Pattern: %s\n", f.Path)
@@ -106,26 +117,22 @@ func reasonWeight(reasonCode string) int {
 		return 55
 	case "CURL_PIPE_SHELL":
 		return 35
-	case "NPM_LIFECYCLE_SCRIPTS":
-		return 25
-	case "NPM_LIFECYCLE_SCRIPT_METADATA":
-		return 35
-	case "NPM_NON_REGISTRY_SOURCE":
-		return 45
-	case "NPM_RECENT_PACKAGE":
+	// Generic lifecycle warnings — always fire for any npm/pnpm/bun install.
+	// Low weight because they carry no package-specific signal.
+	case "NPM_LIFECYCLE_SCRIPTS", "PNPM_LIFECYCLE_SCRIPTS", "BUN_INSTALL_SCRIPTS":
+		return 10
+	// Package-specific lifecycle metadata — noteworthy but common for legit packages.
+	case "NPM_LIFECYCLE_SCRIPT_METADATA", "PNPM_LIFECYCLE_SCRIPT_METADATA", "BUN_LIFECYCLE_SCRIPT_METADATA":
 		return 20
-	case "PNPM_LIFECYCLE_SCRIPTS", "BUN_INSTALL_SCRIPTS":
-		return 25
-	case "PNPM_LIFECYCLE_SCRIPT_METADATA", "BUN_LIFECYCLE_SCRIPT_METADATA":
-		return 35
-	case "PNPM_NON_REGISTRY_SOURCE", "BUN_NON_REGISTRY_SOURCE":
+	case "NPM_NON_REGISTRY_SOURCE", "PNPM_NON_REGISTRY_SOURCE", "BUN_NON_REGISTRY_SOURCE":
 		return 45
-	case "PNPM_RECENT_PACKAGE", "BUN_RECENT_PACKAGE":
+	case "NPM_RECENT_PACKAGE", "PNPM_RECENT_PACKAGE", "BUN_RECENT_PACKAGE":
 		return 20
 	case "UNEXPECTED_WRITE":
 		return 30
+	// External network — expected during package installs. Low individual weight.
 	case "EXTERNAL_NETWORK":
-		return 10
+		return 5
 	case "RUNTIME_MISSING_TOOL", "RUNTIME_PREP_FAILURE":
 		return 60
 	case "TARGET_COMMAND_NOT_FOUND", "TARGET_COMMAND_FAILED":
@@ -175,7 +182,8 @@ func Evaluate(findings []Finding) (Verdict, int) {
 		}
 		w := reasonWeight(f.ReasonCode)
 		if f.ReasonCode == "EXTERNAL_NETWORK" {
-			if seenReasonWeight[f.ReasonCode] >= 20 {
+			// Cap total network contribution at 10 to avoid flooding the score.
+			if seenReasonWeight[f.ReasonCode] >= 10 {
 				continue
 			}
 			seenReasonWeight[f.ReasonCode] += w
@@ -222,6 +230,12 @@ func (r *Reporter) Report(findings []Finding) {
 		out, _ := json.MarshalIndent(rep, "", "  ")
 		fmt.Println(string(out))
 	} else {
+		// Print suppressed network connection summary.
+		if r.networkDupCount > 0 {
+			color.Yellow("[WARNING] ... and %d more network connection(s) to %d host(s) (use --ci for full details)\n",
+				r.networkDupCount, len(r.seenNetworkHosts))
+		}
+
 		fmt.Println("\n--- Scan Complete ---")
 		switch verdict {
 		case VerdictMalicious:

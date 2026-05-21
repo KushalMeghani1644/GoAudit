@@ -117,14 +117,25 @@ func TestDetectsSuspiciousExecFromTmp(t *testing.T) {
 }
 
 func TestDetectsPrivilegeEscalation(t *testing.T) {
-	f := findByReason(parse(t, `setuid(0) = 0`), "PRIVILEGE_ESCALATION")
+	input := "GOAUDIT_RUNTIME_META:phase=target\nsetuid(0) = 0"
+	f := findByReason(parse(t, input), "PRIVILEGE_ESCALATION")
 	if f == nil {
-		t.Fatal("expected PRIVILEGE_ESCALATION for setuid(0)")
+		t.Fatal("expected PRIVILEGE_ESCALATION for setuid(0) after target phase")
+	}
+}
+
+func TestSetuidBeforeTargetPhaseNotFlagged(t *testing.T) {
+	// setuid(0) from su/PAM happens before phase=target and should be ignored.
+	for _, f := range parse(t, `setuid(0) = 0`) {
+		if f.ReasonCode == "PRIVILEGE_ESCALATION" {
+			t.Fatal("should not flag setuid(0) before target phase (su/PAM noise)")
+		}
 	}
 }
 
 func TestNonRootSetuidNotFlagged(t *testing.T) {
-	for _, f := range parse(t, `setuid(1000) = 0`) {
+	input := "GOAUDIT_RUNTIME_META:phase=target\nsetuid(1000) = 0"
+	for _, f := range parse(t, input) {
 		if f.ReasonCode == "PRIVILEGE_ESCALATION" {
 			t.Fatal("should not flag setuid to non-root")
 		}
