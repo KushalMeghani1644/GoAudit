@@ -32,20 +32,20 @@ var scanProjectCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		mode, err := project.ParseUpgradeMode(upgradeMode)
 		if err != nil {
-			report.NewReporter(ciMode).Fatalf("%v\n", err)
+			report.NewReporter(ciMode, verbose).Fatalf("%v\n", err)
 		}
 
 		proj, err := project.Open(args[0], managerOverride)
 		if err != nil {
-			report.NewReporter(ciMode).Fatalf("%v\n", err)
+			report.NewReporter(ciMode, verbose).Fatalf("%v\n", err)
 		}
 
 		installCmd, err := project.BuildInstallCommand(proj.Manager, mode)
 		if err != nil {
-			report.NewReporter(ciMode).Fatalf("%v\n", err)
+			report.NewReporter(ciMode, verbose).Fatalf("%v\n", err)
 		}
 
-		reporter := report.NewReporter(ciMode)
+		reporter := report.NewReporter(ciMode, verbose)
 
 		if !ciMode {
 			fmt.Printf("Detected package manager: %s\n", proj.Manager)
@@ -143,6 +143,7 @@ func extractFindingPackageName(path string) string {
 
 func init() {
 	scanProjectCmd.Flags().BoolVar(&ciMode, "ci", false, "Output JSON for CI integration")
+	scanProjectCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show live findings during scan")
 	scanProjectCmd.Flags().IntVar(&maxRemoteDepth, "max-remote-depth", 2, "Max recursion depth when fetching staged remote scripts")
 	scanProjectCmd.Flags().BoolVar(&offlineMode, "offline", false, "Disable remote URL/script fetching during static analysis")
 	scanProjectCmd.Flags().StringSliceVar(&allowedDomains, "allow-domain", nil, "Allowlist domains for remote script fetches (repeatable)")

@@ -9,8 +9,8 @@ import (
 
 func parse(t *testing.T, input string) []report.Finding {
 	t.Helper()
-	rep := report.NewReporter(true)
-	findings, err := ParseStream(strings.NewReader(input), rep)
+	rep := report.NewReporter(true, false)
+	findings, err := ParseStream(strings.NewReader(input), rep, ParseOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

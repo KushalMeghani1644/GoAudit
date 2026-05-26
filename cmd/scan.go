@@ -11,6 +11,7 @@ import (
 
 var (
 	ciMode         bool
+	verbose        bool
 	maxRemoteDepth int
 	offlineMode    bool
 	allowedDomains []string
@@ -35,9 +36,8 @@ var scanCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		targetCmd := strings.Join(args, " ")
 		profile := inferProfile(targetCmd)
-		reporter := report.NewReporter(ciMode)
+		reporter := report.NewReporter(ciMode, verbose)
 
-		// Extract packages for runtime probe from the install command.
 		var probePackages []string
 		if !skipProbe {
 			probePackages = analyzer.ExtractPackageNamesFromCommand(targetCmd)
@@ -61,35 +61,24 @@ func inferProfile(cmd string) scanProfile {
 	case strings.Contains(lc, "npm") || strings.Contains(lc, "npx"):
 		return profileForManager("npm")
 	case strings.Contains(lc, "pip") || strings.Contains(lc, "python"):
-		return scanProfile{
-			Name:          "python",
-			Image:         "python:3.12-slim",
-			RequiredTools: []string{"bash", "strace", "python3", "curl"},
-		}
+		return scanProfile{Name: "python", Image: "python:3.12-slim", RequiredTools: []string{"bash", "strace", "python3", "curl"}}
 	case strings.Contains(lc, "curl") || strings.Contains(lc, "bash"):
-		return scanProfile{
-			Name:          "shell",
-			Image:         "ubuntu:24.04",
-			RequiredTools: []string{"bash", "strace", "curl"},
-		}
+		return scanProfile{Name: "shell", Image: "ubuntu:24.04", RequiredTools: []string{"bash", "strace", "curl"}}
 	default:
-		return scanProfile{
-			Name:          "default",
-			Image:         "ubuntu:24.04",
-			RequiredTools: []string{"bash", "strace", "curl"},
-		}
+		return scanProfile{Name: "default", Image: "ubuntu:24.04", RequiredTools: []string{"bash", "strace", "curl"}}
 	}
 }
 
 func init() {
 	scanCmd.Flags().BoolVar(&ciMode, "ci", false, "Output JSON for CI integration")
+	scanCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show live findings during scan (default: only final report)")
 	scanCmd.Flags().IntVar(&maxRemoteDepth, "max-remote-depth", 2, "Max recursion depth when fetching staged remote scripts")
 	scanCmd.Flags().BoolVar(&offlineMode, "offline", false, "Disable remote URL/script fetching during static analysis")
 	scanCmd.Flags().StringSliceVar(&allowedDomains, "allow-domain", nil, "Allowlist domains for remote script fetches (repeatable)")
 	scanCmd.Flags().StringVar(&nodeImage, "node-image", "node:current-slim", "Node.js image used for npm/pnpm scans")
 	scanCmd.Flags().StringVar(&bunImage, "bun-image", "oven/bun:1", "Bun image used for bun scans")
 	scanCmd.Flags().StringVar(&networkMode, "network", "auto", "Network policy: auto (based on command type), on, or off")
-	scanCmd.Flags().BoolVar(&runAsRoot, "run-as-root", false, "Run the target command as root inside the sandbox (default: non-root)")
+	scanCmd.Flags().BoolVar(&runAsRoot, "run-as-root", false, "Run the target command as root inside the sandbox")
 	scanCmd.Flags().BoolVar(&skipProbe, "skip-probe", false, "Skip runtime behavior probe after install")
 	rootCmd.AddCommand(scanCmd)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 
 	"github.com/KushalMeghani1644/goaudit/internal/analyzer"
@@ -24,8 +25,30 @@ type pipelineOptions struct {
 	skipProbe       bool
 }
 
+// resolveRegistryIPs resolves known registry hostnames to IPs for classification.
+func resolveRegistryIPs(profileName string) map[string]string {
+	registries := []string{"registry.npmjs.org"}
+	switch profileName {
+	case "pnpm":
+		registries = append(registries, "registry.npmmirror.com")
+	}
+	result := map[string]string{}
+	for _, host := range registries {
+		ips, err := net.LookupHost(host)
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			result[ip] = host
+		}
+	}
+	return result
+}
+
 func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile, reporter *report.Reporter, opts pipelineOptions) {
 	findings := append([]report.Finding{}, opts.priorFindings...)
+
+	reporter.StartProgress("Running static analysis...")
 
 	if !opts.skipStatic {
 		cmdFindings := analyzer.AnalyzeCommand(targetCmd)
@@ -44,12 +67,8 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 	if urls := analyzer.ExtractURLs(targetCmd); len(urls) > 0 && !opts.skipStatic {
 		if offlineMode {
 			f := report.Finding{
-				Severity:   report.SeverityWarning,
-				Type:       "policy",
-				ReasonCode: "INCONCLUSIVE_REMOTE_FETCH",
-				Path:       strings.Join(urls, ","),
-				Confidence: 35,
-				Evidence:   "Offline mode disabled remote script retrieval",
+				Severity: report.SeverityWarning, Type: "policy", ReasonCode: "INCONCLUSIVE_REMOTE_FETCH",
+				Path: strings.Join(urls, ","), Confidence: 35, Evidence: "Offline mode disabled remote script retrieval",
 			}
 			findings = append(findings, f)
 			reporter.PrintLiveFinding(f)
@@ -62,20 +81,14 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 		}
 	}
 
-	// Determine network policy: auto-detect from profile if not explicitly set.
+	// Determine network policy
 	networkEnabled := opts.allowNetwork
 	if networkMode == "auto" {
 		switch profile.Name {
 		case "npm", "pnpm", "bun":
 			networkEnabled = true
-			if !ciMode {
-				fmt.Printf("Package manager (%s) detected, keeping network ON\n", profile.Name)
-			}
 		default:
 			networkEnabled = false
-			if !ciMode {
-				fmt.Println("Non-package-manager command detected, network OFF (sandbox isolated)")
-			}
 		}
 	} else if networkMode == "on" {
 		networkEnabled = true
@@ -83,56 +96,39 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 		networkEnabled = false
 	}
 
-	// Append runtime probe to the target command if packages are specified.
+	// Append runtime probe
 	finalCmd := targetCmd
 	if len(opts.probePackages) > 0 && !opts.skipProbe && isNodeProfile(profile.Name) {
 		probeScript := probe.GenerateNodeProbeScript(opts.probePackages, probe.DefaultTimeoutSec)
 		finalCmd = targetCmd + "\n" + probeScript
-		if !ciMode {
-			fmt.Printf("Runtime probe: will import %d package(s) after install\n", len(opts.probePackages))
-		}
 	}
 
-	if !ciMode {
-		fmt.Printf("Pulling sandbox image %s (one-time setup)...\n", profile.Image)
-	}
+	reporter.UpdateProgress(fmt.Sprintf("Pulling sandbox image %s...", profile.Image))
 
 	s, err := sandbox.NewSandbox(ctx, profile.Image, sandbox.SandboxOptions{
 		NetworkEnabled: networkEnabled,
 		RunAsRoot:      opts.runAsRoot,
 	})
 	if err != nil {
+		reporter.StopProgress()
 		reporter.Fatalf("Failed to initialize sandbox: %v\n", err)
 	}
 
 	if err := s.EnsureImage(ctx); err != nil {
+		reporter.StopProgress()
 		reporter.Fatalf("Failed to pull image: %v\n", err)
 	}
 
-	if s.Runtime() != "runsc" && !ciMode {
-		fmt.Println("\n\033[33m[WARNING] 'runsc' (gVisor) runtime not found in Docker. Falling back to default runtime (runc).\033[0m")
-		fmt.Println("\033[33mFor proper sandboxing, it is highly recommended to install gVisor and configure it in Docker.\033[0m")
-		fmt.Println()
+	if s.Runtime() != "runsc" && !ciMode && verbose {
+		reporter.StopProgress()
+		fmt.Println("\033[33m[WARNING] gVisor (runsc) not found. Using default runtime (runc).\033[0m")
+		reporter.StartProgress("Running in sandbox...")
 	}
 
-	if !ciMode {
-		if opts.projectPath != "" {
-			fmt.Println("Running project install in sandbox:", targetCmd)
-			fmt.Println("Project path:", opts.projectPath)
-		} else {
-			fmt.Println("Running command in sandbox:", targetCmd)
-		}
-		if !networkEnabled {
-			fmt.Println("Network: \033[32mOFF (isolated)\033[0m")
-		} else {
-			fmt.Println("Network: \033[33mON\033[0m")
-		}
-		if opts.runAsRoot {
-			fmt.Println("Execution user: \033[33mroot\033[0m")
-		} else {
-			fmt.Println("Execution user: \033[32mnon-root (uid 1000)\033[0m")
-		}
-	}
+	reporter.UpdateProgress(fmt.Sprintf("Running %s in sandbox...", profile.Name))
+
+	// Resolve registry IPs for network classification
+	registryIPs := resolveRegistryIPs(profile.Name)
 
 	var logStream io.Reader
 	if opts.projectPath != "" {
@@ -142,18 +138,32 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 	}
 	if err != nil {
 		s.Cleanup(ctx)
+		reporter.StopProgress()
 		reporter.Fatalf("Failed to run command: %v\n", err)
 	}
 
-	dynamicFindings, err := parser.ParseStream(logStream, reporter)
+	if len(opts.probePackages) > 0 && !opts.skipProbe {
+		reporter.UpdateProgress(fmt.Sprintf("Running in sandbox + probing %d package(s)...", len(opts.probePackages)))
+	}
+
+	dynamicFindings, err := parser.ParseStream(logStream, reporter, parser.ParseOptions{
+		KnownRegistryIPs: registryIPs,
+	})
 	if err != nil {
 		s.Cleanup(ctx)
+		reporter.StopProgress()
 		reporter.Fatalf("Failed to parse output: %v\n", err)
 	}
 	findings = append(findings, dynamicFindings...)
 
 	s.Cleanup(ctx)
-	reporter.Report(findings)
+
+	meta := report.ReportMeta{
+		Command:                  targetCmd,
+		ProfileName:              profile.Name,
+		SuppressExpectedBehavior: isNodeProfile(profile.Name),
+	}
+	reporter.Report(findings, meta)
 }
 
 func isNodeProfile(name string) bool {

@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/fatih/color"
 )
@@ -42,16 +45,33 @@ type Report struct {
 	Confidence int       `json:"confidence"`
 	Findings   []Finding `json:"findings"`
 }
+type ReportMeta struct {
+	Command                  string `json:"command,omitempty"`
+	ProfileName              string `json:"profileName,omitempty"`
+	PackageName              string `json:"packageName,omitempty"`
+	PackageVersion           string `json:"packageVersion,omitempty"`
+	SuppressExpectedBehavior bool   `json:"suppressExpectedBehavior,omitempty"`
+}
+
+type EvaluationOptions struct {
+	SuppressExpectedBehavior bool
+}
 
 type Reporter struct {
 	CIMode           bool
+	Verbose          bool
 	seenNetworkHosts map[string]int
 	networkDupCount  int
+	mu               sync.Mutex
+	spinnerStop      chan struct{}
+	spinnerDone      chan struct{}
+	spinnerMessage   string
 }
 
-func NewReporter(ciMode bool) *Reporter {
+func NewReporter(ciMode bool, verbose bool) *Reporter {
 	return &Reporter{
 		CIMode:           ciMode,
+		Verbose:          verbose,
 		seenNetworkHosts: make(map[string]int),
 	}
 }
@@ -60,9 +80,74 @@ func (r *Reporter) Fatalf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, format, args...)
 	os.Exit(1)
 }
+func (r *Reporter) StartProgress(message string) {
+	if r.CIMode {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.spinnerStop != nil {
+		r.spinnerMessage = message
+		return
+	}
+	r.spinnerStop = make(chan struct{})
+	r.spinnerDone = make(chan struct{})
+	r.spinnerMessage = message
+	go func() {
+		defer close(r.spinnerDone)
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		i := 0
+		ticker := time.NewTicker(120 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.spinnerStop:
+				fmt.Print("\r\033[K")
+				return
+			case <-ticker.C:
+				r.mu.Lock()
+				msg := r.spinnerMessage
+				r.mu.Unlock()
+				fmt.Printf("\r⏳ %s %s", msg, frames[i%len(frames)])
+				i++
+			}
+		}
+	}()
+}
+
+func (r *Reporter) UpdateProgress(message string) {
+	if r.CIMode {
+		return
+	}
+	r.mu.Lock()
+	r.spinnerMessage = message
+	r.mu.Unlock()
+}
+
+func (r *Reporter) StopProgress() {
+	if r.CIMode {
+		return
+	}
+	r.mu.Lock()
+	stop := r.spinnerStop
+	done := r.spinnerDone
+	r.spinnerStop = nil
+	r.spinnerDone = nil
+	r.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
+	}
+}
 
 func (r *Reporter) PrintLiveFinding(f Finding) {
 	if r.CIMode {
+		return
+	}
+	if !r.Verbose && f.Severity != SeverityCritical {
+		return
+	}
+	if f.ReasonCode == "RUNTIME_METADATA" {
 		return
 	}
 	if f.Severity == SeverityCritical {
@@ -75,7 +160,10 @@ func (r *Reporter) PrintLiveFinding(f Finding) {
 		} else {
 			color.Red("[CRITICAL] %s: %s\n", f.Type, f.Path)
 		}
-	} else if f.Severity == SeverityWarning {
+		return
+	}
+
+	if f.Severity == SeverityWarning {
 		if f.Type == "network" && f.ReasonCode == "EXTERNAL_NETWORK" {
 			// Deduplicate network warnings — only print first occurrence per IP.
 			r.seenNetworkHosts[f.IP]++
@@ -91,7 +179,10 @@ func (r *Reporter) PrintLiveFinding(f Finding) {
 		} else {
 			color.Yellow("[WARNING] %s: %s\n", f.Type, f.Path)
 		}
-	} else {
+		return
+	}
+
+	if r.Verbose {
 		color.Cyan("[INFO] %s: %s\n", f.Type, f.Path)
 	}
 }
@@ -102,12 +193,13 @@ func isHardMalicious(f Finding) bool {
 		f.ReasonCode == "REVERSE_SHELL" ||
 		f.ReasonCode == "PRIVILEGE_ESCALATION" ||
 		f.ReasonCode == "FILELESS_EXEC" ||
-		f.ReasonCode == "PROCESS_INJECTION"
+		f.ReasonCode == "PROCESS_INJECTION" ||
+		f.ReasonCode == "ENV_THEFT"
 }
 
 func reasonWeight(reasonCode string) int {
 	switch reasonCode {
-	case "CREDENTIAL_READ", "PERSISTENCE_WRITE", "PRIVILEGE_ESCALATION":
+	case "CREDENTIAL_READ", "PERSISTENCE_WRITE", "PRIVILEGE_ESCALATION", "ENV_THEFT":
 		return 80
 	case "STAGED_DOWNLOADER", "SUSPICIOUS_EXEC", "SCRIPT_OBFUSCATION":
 		return 55
@@ -132,7 +224,9 @@ func reasonWeight(reasonCode string) int {
 		return 30
 	// External network — expected during package installs. Low individual weight.
 	case "EXTERNAL_NETWORK":
-		return 5
+		return 25
+	case "EXTERNAL_NETWORK_REGISTRY":
+		return 0
 	case "RUNTIME_MISSING_TOOL", "RUNTIME_PREP_FAILURE":
 		return 60
 	case "TARGET_COMMAND_NOT_FOUND", "TARGET_COMMAND_FAILED":
@@ -160,8 +254,16 @@ func reasonWeight(reasonCode string) int {
 		return 15
 	}
 }
+func isExpectedBehaviorReason(reasonCode string) bool {
+	switch reasonCode {
+	case "NPM_LIFECYCLE_SCRIPTS", "PNPM_LIFECYCLE_SCRIPTS", "BUN_INSTALL_SCRIPTS", "EXTERNAL_NETWORK_REGISTRY":
+		return true
+	default:
+		return false
+	}
+}
 
-func Evaluate(findings []Finding) (Verdict, int) {
+func Evaluate(findings []Finding, opts EvaluationOptions) (Verdict, int) {
 	if len(findings) == 0 {
 		return VerdictClean, 90
 	}
@@ -180,8 +282,11 @@ func Evaluate(findings []Finding) (Verdict, int) {
 			f.ReasonCode == "TARGET_COMMAND_FAILED" {
 			inconclusive = true
 		}
+		if opts.SuppressExpectedBehavior && isExpectedBehaviorReason(f.ReasonCode) {
+			continue
+		}
 		w := reasonWeight(f.ReasonCode)
-		if f.ReasonCode == "EXTERNAL_NETWORK" {
+		if f.ReasonCode == "EXTERNAL_NETWORK" || f.ReasonCode == "EXTERNAL_NETWORK_REGISTRY" {
 			// Cap total network contribution at 10 to avoid flooding the score.
 			if seenReasonWeight[f.ReasonCode] >= 10 {
 				continue
@@ -215,8 +320,11 @@ func Evaluate(findings []Finding) (Verdict, int) {
 	return VerdictClean, 75
 }
 
-func (r *Reporter) Report(findings []Finding) {
-	verdict, confidence := Evaluate(findings)
+func (r *Reporter) Report(findings []Finding, meta ReportMeta) {
+	r.StopProgress()
+	verdict, confidence := Evaluate(findings, EvaluationOptions{
+		SuppressExpectedBehavior: meta.SuppressExpectedBehavior,
+	})
 
 	if r.CIMode {
 		rep := Report{
@@ -227,26 +335,19 @@ func (r *Reporter) Report(findings []Finding) {
 		if rep.Findings == nil {
 			rep.Findings = []Finding{}
 		}
-		out, _ := json.MarshalIndent(rep, "", "  ")
+		out, _ := json.MarshalIndent(struct {
+			Report
+			Meta ReportMeta `json:"meta,omitempty"`
+		}{
+			Report: rep,
+			Meta:   meta,
+		}, "", "  ")
 		fmt.Println(string(out))
 	} else {
-		// Print suppressed network connection summary.
-		if r.networkDupCount > 0 {
-			color.Yellow("[WARNING] ... and %d more network connection(s) to %d host(s) (use --ci for full details)\n",
-				r.networkDupCount, len(r.seenNetworkHosts))
+		if strings.TrimSpace(meta.Command) == "" {
+			meta.Command = "scan"
 		}
-
-		fmt.Println("\n--- Scan Complete ---")
-		switch verdict {
-		case VerdictMalicious:
-			color.Red("Verdict: %s", verdict)
-		case VerdictSuspicious, VerdictInconclusive:
-			color.Yellow("Verdict: %s", verdict)
-		default:
-			color.Green("Verdict: %s", verdict)
-		}
-		fmt.Printf("Confidence: %d\n", confidence)
-		fmt.Printf("Total Findings: %d\n", len(findings))
+		fmt.Println(FormatHumanReport(findings, meta, verdict, confidence))
 	}
 
 	if verdict == VerdictMalicious || verdict == VerdictInconclusive {

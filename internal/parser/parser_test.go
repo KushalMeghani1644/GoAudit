@@ -8,9 +8,9 @@ import (
 )
 
 func TestParseStreamDetectsRuntimeMissingTool(t *testing.T) {
-	rep := report.NewReporter(true)
+	rep := report.NewReporter(true, false)
 	logs := "GOAUDIT_RUNTIME_ERROR:missing_tool:curl\n"
-	findings, err := ParseStream(strings.NewReader(logs), rep)
+	findings, err := ParseStream(strings.NewReader(logs), rep, ParseOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -23,9 +23,9 @@ func TestParseStreamDetectsRuntimeMissingTool(t *testing.T) {
 }
 
 func TestParseStreamDetectsTargetExitFailure(t *testing.T) {
-	rep := report.NewReporter(true)
+	rep := report.NewReporter(true, false)
 	logs := "GOAUDIT_TARGET_EXIT:127\n"
-	findings, err := ParseStream(strings.NewReader(logs), rep)
+	findings, err := ParseStream(strings.NewReader(logs), rep, ParseOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
