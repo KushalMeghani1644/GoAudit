@@ -7,11 +7,11 @@ import (
 	"net"
 	"strings"
 
-	"github.com/KushalMeghani1644/goaudit/internal/analyzer"
-	"github.com/KushalMeghani1644/goaudit/internal/parser"
-	"github.com/KushalMeghani1644/goaudit/internal/probe"
-	"github.com/KushalMeghani1644/goaudit/internal/report"
-	"github.com/KushalMeghani1644/goaudit/internal/sandbox"
+	"github.com/KushalMeghani1644/GoAudit-CLI/internal/analyzer"
+	"github.com/KushalMeghani1644/GoAudit-CLI/internal/parser"
+	"github.com/KushalMeghani1644/GoAudit-CLI/internal/probe"
+	"github.com/KushalMeghani1644/GoAudit-CLI/internal/report"
+	"github.com/KushalMeghani1644/GoAudit-CLI/internal/sandbox"
 )
 
 type pipelineOptions struct {

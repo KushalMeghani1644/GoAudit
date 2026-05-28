@@ -23,7 +23,7 @@ Verdict: SUSPICIOUS
 Currently to install GoAudit, you need to have Go installed on your system, with that just run the following command!
 
 ```zsh
-go install github.com/KushalMeghani1644/GoAudit-CLI@latest
+go install github.com/KushalMeghani1644/GoAudit-CLI/cmd/goaudit@latest
 ```
 
 ## Usage

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/KushalMeghani1644/goaudit/internal/analyzer"
-	"github.com/KushalMeghani1644/goaudit/internal/project"
-	"github.com/KushalMeghani1644/goaudit/internal/report"
+	"github.com/KushalMeghani1644/GoAudit-CLI/internal/analyzer"
+	"github.com/KushalMeghani1644/GoAudit-CLI/internal/project"
+	"github.com/KushalMeghani1644/GoAudit-CLI/internal/report"
 	"github.com/spf13/cobra"
 )
 
