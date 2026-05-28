@@ -100,7 +100,7 @@ func TestEvaluate_ScoringEdgeCases(t *testing.T) {
 			name: "Score 90 (MALICIOUS)",
 			findings: []Finding{
 				{Severity: SeverityWarning, ReasonCode: "STAGED_DOWNLOADER"}, // 55
-				{Severity: SeverityWarning, ReasonCode: "CURL_PIPE_SHELL"},  // 35
+				{Severity: SeverityWarning, ReasonCode: "CURL_PIPE_SHELL"},   // 35
 			},
 			expectedVerdict: VerdictMalicious,
 			expectedScore:   90,
@@ -126,7 +126,7 @@ func TestEvaluate_ScoringEdgeCases(t *testing.T) {
 		{
 			name: "Inconclusive wins over Critical",
 			findings: []Finding{
-				{Severity: SeverityCritical, ReasonCode: "CREDENTIAL_READ"},    // Malicious
+				{Severity: SeverityCritical, ReasonCode: "CREDENTIAL_READ"},     // Malicious
 				{Severity: SeverityWarning, ReasonCode: "RUNTIME_PREP_FAILURE"}, // Inconclusive
 			},
 			expectedVerdict: VerdictInconclusive,

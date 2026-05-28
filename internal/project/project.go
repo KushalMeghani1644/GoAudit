@@ -33,17 +33,17 @@ func ParseUpgradeMode(s string) (UpgradeMode, error) {
 }
 
 type Project struct {
-	Root    string
-	Manager string
+	Root     string
+	Manager  string
 	Manifest packageManifest
 }
 
 type packageManifest struct {
-	PackageManager string            `json:"packageManager"`
-	Dependencies   map[string]string `json:"dependencies"`
-	DevDependencies map[string]string `json:"devDependencies"`
+	PackageManager       string            `json:"packageManager"`
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
-	Workspaces     json.RawMessage   `json:"workspaces"`
+	Workspaces           json.RawMessage   `json:"workspaces"`
 }
 
 func Open(path string, managerOverride string) (*Project, error) {
