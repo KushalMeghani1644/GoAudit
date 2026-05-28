@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
@@ -51,10 +52,18 @@ func NewSandbox(ctx context.Context, image string, opts SandboxOptions) (*Sandbo
 	}, nil
 }
 
-func (s *Sandbox) Runtime() string        { return s.runtime }
-func (s *Sandbox) NetworkEnabled() bool    { return s.networkEnabled }
+func (s *Sandbox) Runtime() string       { return s.runtime }
+func (s *Sandbox) SetRuntime(r string)   { s.runtime = r }
+func (s *Sandbox) SetImage(image string) { s.image = image }
+func (s *Sandbox) NetworkEnabled() bool  { return s.networkEnabled }
 
 func (s *Sandbox) EnsureImage(ctx context.Context) error {
+	if _, err := s.cli.ImageInspect(ctx, s.image); err == nil {
+		return nil
+	} else if !cerrdefs.IsNotFound(err) {
+		return err
+	}
+
 	reader, err := s.cli.ImagePull(ctx, s.image, image.PullOptions{})
 	if err != nil {
 		return err
@@ -121,10 +130,7 @@ strace -s 256 -f -e trace=%s -o /dev/stderr su "$SANDBOX_USER" -s /bin/bash -c '
 
 	script := fmt.Sprintf(`set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-if command -v apt-get >/dev/null 2>&1; then
-  apt-get update -qq > /dev/null 2>&1 || { echo "GOAUDIT_RUNTIME_ERROR:prep_failed" >&2; exit 98; }
-  apt-get install -y -qq --no-install-recommends strace curl ca-certificates dnsutils > /dev/null 2>&1 || { echo "GOAUDIT_RUNTIME_ERROR:prep_failed" >&2; exit 98; }
-fi
+%s
 
 %s
 %s
@@ -156,7 +162,7 @@ echo "GOAUDIT_TARGET_EXIT:${target_rc}" >&2
 if [ "${target_rc}" -ne 0 ]; then
   exit 99
 fi
-`, setupScript, toolsCheck, profileName, image,
+`, aptPrepScript, setupScript, toolsCheck, profileName, image,
 		userSetup, honeypotScript(), projectStage, targetCmd, execLine)
 
 	pidsLimit := int64(256)
@@ -169,6 +175,9 @@ fi
 			CPUQuota:  50000,
 			PidsLimit: &pidsLimit,
 		},
+	}
+	if s.runtime == "runsc" {
+		hostConfig.SecurityOpt = []string{"label=disable"}
 	}
 	if !s.networkEnabled {
 		hostConfig.NetworkMode = "none"

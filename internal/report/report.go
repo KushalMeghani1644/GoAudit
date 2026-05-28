@@ -50,6 +50,7 @@ type ReportMeta struct {
 	ProfileName              string `json:"profileName,omitempty"`
 	PackageName              string `json:"packageName,omitempty"`
 	PackageVersion           string `json:"packageVersion,omitempty"`
+	SandboxRuntime           string `json:"sandboxRuntime,omitempty"`
 	SuppressExpectedBehavior bool   `json:"suppressExpectedBehavior,omitempty"`
 }
 
@@ -152,13 +153,13 @@ func (r *Reporter) PrintLiveFinding(f Finding) {
 	}
 	if f.Severity == SeverityCritical {
 		if f.Type == "fs_read" {
-			color.Red("[CRITICAL] File Read Detected: %s\n", f.Path)
+			color.Red("[CRITICAL] File Read Detected: %s\r\n", f.Path)
 		} else if f.Type == "fs_write" {
-			color.Red("[CRITICAL] Suspicious File Write: %s\n", f.Path)
+			color.Red("[CRITICAL] Suspicious File Write: %s\r\n", f.Path)
 		} else if f.Type == "exec" {
-			color.Red("[CRITICAL] Suspicious Process Executed: %s\n", f.Path)
+			color.Red("[CRITICAL] Suspicious Process Executed: %s\r\n", f.Path)
 		} else {
-			color.Red("[CRITICAL] %s: %s\n", f.Type, f.Path)
+			color.Red("[CRITICAL] %s: %s\r\n", f.Type, f.Path)
 		}
 		return
 	}
@@ -171,13 +172,13 @@ func (r *Reporter) PrintLiveFinding(f Finding) {
 				r.networkDupCount++
 				return
 			}
-			color.Yellow("[WARNING] Network Connection: %s (%s:%d)\n", f.Host, f.IP, f.Port)
+			color.Yellow("[WARNING] Network Connection: %s (%s:%d)\r\n", f.Host, f.IP, f.Port)
 		} else if f.Type == "command" {
-			color.Yellow("[WARNING] Suspicious Command Pattern: %s\n", f.Path)
+			color.Yellow("[WARNING] Suspicious Command Pattern: %s\r\n", f.Path)
 		} else if f.Type == "fs_write" {
-			color.Yellow("[WARNING] Unexpected File Write: %s\n", f.Path)
+			color.Yellow("[WARNING] Unexpected File Write: %s\r\n", f.Path)
 		} else {
-			color.Yellow("[WARNING] %s: %s\n", f.Type, f.Path)
+			color.Yellow("[WARNING] %s: %s\r\n", f.Type, f.Path)
 		}
 		return
 	}
@@ -347,7 +348,7 @@ func (r *Reporter) Report(findings []Finding, meta ReportMeta) {
 		if strings.TrimSpace(meta.Command) == "" {
 			meta.Command = "scan"
 		}
-		fmt.Println(FormatHumanReport(findings, meta, verdict, confidence))
+		fmt.Print(FormatHumanReport(findings, meta, verdict, confidence) + "\r\n")
 	}
 
 	if verdict == VerdictMalicious || verdict == VerdictInconclusive {

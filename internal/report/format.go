@@ -32,6 +32,12 @@ func FormatHumanReport(findings []Finding, meta ReportMeta, verdict Verdict, con
 		b.WriteString(fmt.Sprintf("✅ Verdict: %s (confidence: %d)\n", verdict, confidence))
 	}
 
+	if meta.SandboxRuntime == "runsc" {
+		b.WriteString("🛡️  Sandbox: gVisor (runsc)\n")
+	} else if meta.SandboxRuntime != "" {
+		b.WriteString(fmt.Sprintf("⚠️  Sandbox: %s (install gVisor for stronger isolation)\n", meta.SandboxRuntime))
+	}
+
 	if meta.PackageName != "" {
 		if meta.PackageVersion != "" {
 			b.WriteString(fmt.Sprintf("📦 Package: %s@%s\n", meta.PackageName, meta.PackageVersion))
@@ -62,7 +68,8 @@ func FormatHumanReport(findings []Finding, meta ReportMeta, verdict Verdict, con
 	} else {
 		b.WriteString("   Use --ci for full JSON output.\n")
 	}
-	return b.String()
+	// Replace \n with \r\n to prevent staircasing if the terminal is in raw/cbreak mode
+	return strings.ReplaceAll(b.String(), "\n", "\r\n")
 }
 
 func writeFindingsList(b *strings.Builder, findings []Finding) {

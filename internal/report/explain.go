@@ -53,6 +53,7 @@ var reasonExplanations = map[string]Explanation{
 	// Runtime
 	"RUNTIME_MISSING_TOOL":    {"Missing Tool", "A required tool was not found in the sandbox"},
 	"RUNTIME_PREP_FAILURE":    {"Sandbox Setup Failed", "The sandbox preparation phase failed"},
+	"RUNSC_FALLBACK_RUNC":     {"gVisor Fallback", "gVisor prep failed; scan retried using runc"},
 	"TARGET_COMMAND_FAILED":   {"Command Failed", "The target command exited with a non-zero status"},
 	"TARGET_COMMAND_NOT_FOUND": {"Command Not Found", "The target command was not found in the sandbox"},
 	"RUNTIME_METADATA":        {"Runtime Metadata", "Runtime metadata emitted by the sandbox for diagnostics"},

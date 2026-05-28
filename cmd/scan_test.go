@@ -24,3 +24,18 @@ func TestInferProfileForPackageManagers(t *testing.T) {
 		t.Fatalf("unexpected bun profile: %#v", bun)
 	}
 }
+
+func TestShouldUsePublishedNodeSandbox(t *testing.T) {
+	if !shouldUsePublishedNodeSandbox("runsc", scanProfile{Name: "npm", Image: "node:current-slim"}) {
+		t.Fatal("expected default npm runsc scan to use published sandbox image")
+	}
+	if shouldUsePublishedNodeSandbox("runsc", scanProfile{Name: "npm", Image: "custom/node:latest"}) {
+		t.Fatal("expected custom node image to be preserved")
+	}
+	if shouldUsePublishedNodeSandbox("", scanProfile{Name: "npm", Image: "node:current-slim"}) {
+		t.Fatal("expected runc scan to keep stock node image")
+	}
+	if shouldUsePublishedNodeSandbox("runsc", scanProfile{Name: "python", Image: "node:current-slim"}) {
+		t.Fatal("expected non-node profile to keep its image")
+	}
+}

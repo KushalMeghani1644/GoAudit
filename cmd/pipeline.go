@@ -103,8 +103,6 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 		finalCmd = targetCmd + "\n" + probeScript
 	}
 
-	reporter.UpdateProgress(fmt.Sprintf("Pulling sandbox image %s...", profile.Image))
-
 	s, err := sandbox.NewSandbox(ctx, profile.Image, sandbox.SandboxOptions{
 		NetworkEnabled: networkEnabled,
 		RunAsRoot:      opts.runAsRoot,
@@ -114,56 +112,144 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 		reporter.Fatalf("Failed to initialize sandbox: %v\n", err)
 	}
 
-	if err := s.EnsureImage(ctx); err != nil {
-		reporter.StopProgress()
-		reporter.Fatalf("Failed to pull image: %v\n", err)
+	if shouldUsePublishedNodeSandbox(s.Runtime(), profile) {
+		profile.Image = sandbox.NodeSandboxImage
+		s.SetImage(profile.Image)
 	}
 
-	if s.Runtime() != "runsc" && !ciMode && verbose {
+	reporter.UpdateProgress(fmt.Sprintf("Preparing sandbox image %s...", profile.Image))
+
+	imageFallbackToRunc := false
+	if err := s.EnsureImage(ctx); err != nil {
+		if s.Runtime() == "runsc" && isNodeProfile(profile.Name) && profile.Image == sandbox.NodeSandboxImage {
+			imageFallbackToRunc = true
+			fallback := report.Finding{
+				Severity:   report.SeverityWarning,
+				Type:       "runtime",
+				ReasonCode: "RUNSC_FALLBACK_RUNC",
+				Path:       "sandbox",
+				Confidence: 85,
+				Evidence:   fmt.Sprintf("could not prepare gVisor sandbox image %s; retried scan using runc: %v", sandbox.NodeSandboxImage, err),
+			}
+			findings = append(findings, fallback)
+			reporter.PrintLiveFinding(fallback)
+			if !ciMode {
+				reporter.StopProgress()
+				fmt.Printf("\033[33m[WARNING] Could not prepare gVisor sandbox image %s. Retrying with runc.\033[0m\r\n", sandbox.NodeSandboxImage)
+				reporter.StartProgress("Retrying with runc...")
+			}
+			s.SetRuntime("")
+			profile.Image = sandbox.DefaultNodeImage
+			s.SetImage(profile.Image)
+			reporter.UpdateProgress(fmt.Sprintf("Preparing sandbox image %s...", profile.Image))
+			if err := s.EnsureImage(ctx); err != nil {
+				reporter.StopProgress()
+				reporter.Fatalf("Failed to prepare image after runc fallback: %v\n", err)
+			}
+		} else {
+			reporter.StopProgress()
+			reporter.Fatalf("Failed to prepare image: %v\n", err)
+		}
+	}
+
+	if s.Runtime() != "runsc" && !ciMode && !imageFallbackToRunc {
 		reporter.StopProgress()
-		fmt.Println("\033[33m[WARNING] gVisor (runsc) not found. Using default runtime (runc).\033[0m")
+		fmt.Print("\033[33m[WARNING] gVisor (runsc) is not registered in Docker (see docker info Runtimes). Using default runtime (runc).\033[0m\r\n")
 		reporter.StartProgress("Running in sandbox...")
 	}
 
 	reporter.UpdateProgress(fmt.Sprintf("Running %s in sandbox...", profile.Name))
 
-	// Resolve registry IPs for network classification
 	registryIPs := resolveRegistryIPs(profile.Name)
 
-	var logStream io.Reader
-	if opts.projectPath != "" {
-		logStream, err = s.RunProjectCommand(ctx, finalCmd, opts.projectPath, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
-	} else {
-		logStream, err = s.RunCommand(ctx, finalCmd, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
-	}
+	dynamicFindings, sandboxRuntime, err := runSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
 	if err != nil {
 		s.Cleanup(ctx)
 		reporter.StopProgress()
 		reporter.Fatalf("Failed to run command: %v\n", err)
 	}
 
+	// If gVisor prep failed (often apt-get under runsc), retry once with runc.
+	if s.Runtime() == "runsc" && parser.HasPrepFailure(dynamicFindings) {
+		s.Cleanup(ctx)
+		if !ciMode {
+			reporter.StopProgress()
+			fmt.Print("\033[33m[WARNING] gVisor sandbox prep failed (tools/apt). Retrying with runc; npm install behavior is still scanned.\033[0m\r\n")
+			reporter.StartProgress("Retrying with runc...")
+		}
+		fallback := report.Finding{
+			Severity:   report.SeverityWarning,
+			Type:       "runtime",
+			ReasonCode: "RUNSC_FALLBACK_RUNC",
+			Path:       "sandbox",
+			Confidence: 85,
+			Evidence:   "gVisor prep failed; retried scan using runc",
+		}
+		findings = append(findings, fallback)
+		reporter.PrintLiveFinding(fallback)
+
+		s.SetRuntime("")
+		dynamicFindings, sandboxRuntime, err = runSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
+		if err != nil {
+			s.Cleanup(ctx)
+			reporter.StopProgress()
+			reporter.Fatalf("Failed to run command after runc fallback: %v\n", err)
+		}
+	}
+
+	findings = append(findings, dynamicFindings...)
+
+	s.Cleanup(ctx)
+
+	if sandboxRuntime == "" {
+		sandboxRuntime = "runc"
+	}
+
+	meta := report.ReportMeta{
+		Command:                  targetCmd,
+		ProfileName:              profile.Name,
+		SandboxRuntime:           sandboxRuntime,
+		SuppressExpectedBehavior: isNodeProfile(profile.Name),
+	}
+	reporter.Report(findings, meta)
+}
+
+func runSandboxAndParse(
+	ctx context.Context,
+	s *sandbox.Sandbox,
+	profile scanProfile,
+	finalCmd string,
+	opts pipelineOptions,
+	registryIPs map[string]string,
+	reporter *report.Reporter,
+) ([]report.Finding, string, error) {
 	if len(opts.probePackages) > 0 && !opts.skipProbe {
 		reporter.UpdateProgress(fmt.Sprintf("Running in sandbox + probing %d package(s)...", len(opts.probePackages)))
+	}
+
+	var logStream io.Reader
+	var err error
+	if opts.projectPath != "" {
+		logStream, err = s.RunProjectCommand(ctx, finalCmd, opts.projectPath, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
+	} else {
+		logStream, err = s.RunCommand(ctx, finalCmd, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
+	}
+	if err != nil {
+		return nil, "", err
 	}
 
 	dynamicFindings, err := parser.ParseStream(logStream, reporter, parser.ParseOptions{
 		KnownRegistryIPs: registryIPs,
 	})
 	if err != nil {
-		s.Cleanup(ctx)
-		reporter.StopProgress()
-		reporter.Fatalf("Failed to parse output: %v\n", err)
+		return nil, "", err
 	}
-	findings = append(findings, dynamicFindings...)
 
-	s.Cleanup(ctx)
-
-	meta := report.ReportMeta{
-		Command:                  targetCmd,
-		ProfileName:              profile.Name,
-		SuppressExpectedBehavior: isNodeProfile(profile.Name),
+	runtime := s.Runtime()
+	if runtime == "" {
+		runtime = "runc"
 	}
-	reporter.Report(findings, meta)
+	return dynamicFindings, runtime, nil
 }
 
 func isNodeProfile(name string) bool {
@@ -172,6 +258,10 @@ func isNodeProfile(name string) bool {
 		return true
 	}
 	return false
+}
+
+func shouldUsePublishedNodeSandbox(runtime string, profile scanProfile) bool {
+	return runtime == "runsc" && isNodeProfile(profile.Name) && profile.Image == sandbox.DefaultNodeImage
 }
 
 func profileForManager(manager string) scanProfile {

@@ -51,6 +51,7 @@ goaudit scan "npm install <package>" --network off
 ### Scan a project directory
 
 Audit an existing app (Next.js, TanStack, etc.) before upgrading dependencies. GoAudit reads `package.json`, detects npm/pnpm/bun, statically checks direct dependencies against the npm registry, then runs the upgrade install inside a sandbox. Your host `node_modules` is not modified.
+
 ```zsh
 goaudit scan-project ~/mywebsite
 goaudit scan-project ~/mywebsite --upgrade-mode ncu
@@ -71,6 +72,38 @@ goaudit scan-project ~/app --skip-probe
 
 - Docker
 - gVisor (recommended)
+
+### gVisor (runsc) on Fedora / SELinux
+
+GoAudit uses gVisor when Docker lists `runsc` in `docker info` Runtimes. Installing `runsc` binary is not enough, please register it in Docker:
+
+```json
+{
+  "runtimes": {
+    "runsc": {
+      "path": "/usr/local/bin/runsc",
+      "runtimeArgs": ["--debug=false", "--platform=ptrace"]
+    }
+  },
+  "default-runtime": "runc"
+}
+```
+
+Use `runsc help platform` to see valid `--platform` values.
+
+Restart Docker: `sudo systemctl restart docker`, then verify:
+
+```bash
+docker info | rg -i runtimes
+```
+
+**SELinux:** gVisor cannot use Docker’s default container SELinux labels. GoAudit sets `--security-opt label=disable` automatically for `runsc` containers.
+
+**apt-get under runsc:** Many hosts cannot run `apt-get` inside a gVisor container. When gVisor is available and you keep the default `--node-image`, GoAudit pulls `ghcr.io/kushalmeghani1644/goaudit-node-sandbox:latest`, which has scan tools installed at image build time with Docker's default runtime. It still runs `npm install` / `pnpm install` under gVisor for dynamic scanning.
+
+If the published gVisor image cannot be prepared, or if gVisor prep still fails, GoAudit **retries once with runc** and prints a warning (npm behavior is still scanned).
+
+Without `runsc` in `docker info`, GoAudit falls back to `runc` with a warning.
 
 ## Important Note
 

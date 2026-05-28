@@ -1,0 +1,10 @@
+# Sandbox image for GoAudit npm/pnpm scans under gVisor (runsc).
+# Build with runc (host docker build); scan with runsc — no runtime apt-get needed.
+FROM node:current-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      strace curl ca-certificates dnsutils rsync \
+ && rm -rf /var/lib/apt/lists/*

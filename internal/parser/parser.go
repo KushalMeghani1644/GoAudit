@@ -12,6 +12,16 @@ import (
 	"github.com/KushalMeghani1644/goaudit/internal/report"
 )
 
+// HasPrepFailure reports whether sandbox container logs indicate prep_failed.
+func HasPrepFailure(findings []report.Finding) bool {
+	for _, f := range findings {
+		if f.ReasonCode == "RUNTIME_PREP_FAILURE" {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	fsRegex   = regexp.MustCompile(`(?i)(?:open|openat|openat2).*?\"(.*?)\",\s*([A-Z_\|]+)`)
 	netRegex  = regexp.MustCompile(`connect\(.*sa_family=(?:AF_INET|AF_INET6).*?sin_port=htons\((\d+)\).*?(?:inet_addr\("(.*?)"\)|inet_pton\([^,]+,\s*"(.*?)")`)
@@ -259,6 +269,14 @@ func ParseStream(r io.Reader, reporter *report.Reporter, opts ParseOptions) ([]r
 			}
 			ip := net.ParseIP(ipStr)
 			if ip != nil && (ip.IsLoopback() || ip.String() == "127.0.0.1" || ip.String() == "::1") {
+				continue
+			}
+			// Skip DNS resolver connections (port 53) — normal system behavior.
+			if port == 53 {
+				continue
+			}
+			// Skip private/link-local IPs — these are infrastructure, not exfiltration.
+			if ip != nil && (ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
 				continue
 			}
 
