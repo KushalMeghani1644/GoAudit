@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -137,6 +139,9 @@ func analyzeRegistryBackedSpecs(specs []string, manager string, cap int) []repor
 
 func analyzeRegistrySpec(client *http.Client, spec, manager string) []report.Finding {
 	var findings []report.Finding
+	if isLocalPathSpec(spec) {
+		return analyzeLocalPackage(spec, manager)
+	}
 	if isNonRegistryNpmSpec(spec) {
 		findings = append(findings, report.Finding{
 			Severity:   report.SeverityWarning,
@@ -268,7 +273,35 @@ func isNonRegistryNpmSpec(spec string) bool {
 	return strings.Contains(spec, "://") ||
 		strings.HasPrefix(spec, "git+") ||
 		strings.Contains(spec, "github.com/") ||
-		strings.HasPrefix(spec, "file:")
+		strings.HasPrefix(spec, "file:") ||
+		isLocalPathSpec(spec)
+}
+
+func isLocalPathSpec(spec string) bool {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return false
+	}
+	if strings.HasPrefix(spec, "file:") {
+		return true
+	}
+	return strings.HasPrefix(spec, "./") ||
+		strings.HasPrefix(spec, "../") ||
+		strings.HasPrefix(spec, "/") ||
+		spec == "." ||
+		spec == ".."
+}
+
+func localPackagePath(spec string) string {
+	spec = strings.TrimSpace(spec)
+	spec = strings.TrimPrefix(spec, "file:")
+	if decoded, err := url.PathUnescape(spec); err == nil {
+		spec = decoded
+	}
+	if spec == "" {
+		return ""
+	}
+	return filepath.Clean(spec)
 }
 
 func normalizeNPMPackageName(spec string) string {
@@ -292,6 +325,126 @@ func normalizeNPMPackageName(spec string) string {
 		return spec[:idx]
 	}
 	return spec
+}
+
+type localPackageJSON struct {
+	Name    string            `json:"name"`
+	Version string            `json:"version"`
+	Scripts map[string]string `json:"scripts"`
+}
+
+func analyzeLocalPackage(spec, manager string) []report.Finding {
+	pkgPath := localPackagePath(spec)
+	if pkgPath == "" {
+		return nil
+	}
+	pkg, err := readLocalPackageJSON(pkgPath)
+	if err != nil {
+		return []report.Finding{{
+			Severity:   report.SeverityWarning,
+			Type:       manager,
+			ReasonCode: managerReason(manager, "INCONCLUSIVE_LOCAL_PACKAGE"),
+			Path:       spec,
+			Confidence: 45,
+			Evidence:   err.Error(),
+		}}
+	}
+
+	name := strings.TrimSpace(pkg.Name)
+	if name == "" {
+		name = spec
+	}
+	version := strings.TrimSpace(pkg.Version)
+	if version == "" {
+		version = "local"
+	}
+
+	var findings []report.Finding
+	lifecycleScripts := []string{"preinstall", "install", "postinstall", "prepare"}
+	foundLifecycle := false
+	for _, scriptName := range lifecycleScripts {
+		scriptContent, exists := pkg.Scripts[scriptName]
+		if !exists {
+			continue
+		}
+		if !foundLifecycle {
+			findings = append(findings, report.Finding{
+				Severity:   report.SeverityWarning,
+				Type:       manager,
+				ReasonCode: managerReason(manager, "LIFECYCLE_SCRIPT_METADATA"),
+				Path:       name + "@" + version,
+				Confidence: 80,
+				Evidence:   fmt.Sprintf("Local package defines %s script", scriptName),
+			})
+			foundLifecycle = true
+		}
+
+		body := scriptContent + "\n" + localLifecycleReferencedContent(pkgPath, scriptContent)
+		contentFindings := analyzeScriptBody(
+			fmt.Sprintf("%s@%s:%s", name, version, scriptName),
+			strings.ToLower(body),
+		)
+		for i := range contentFindings {
+			contentFindings[i].Type = manager
+			contentFindings[i].ReasonCode = managerReason(manager, "LIFECYCLE_"+contentFindings[i].ReasonCode)
+		}
+		findings = append(findings, contentFindings...)
+	}
+
+	return findings
+}
+
+func readLocalPackageJSON(pkgPath string) (*localPackageJSON, error) {
+	info, err := os.Stat(pkgPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		pkgPath = filepath.Join(pkgPath, "package.json")
+	}
+	raw, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return nil, err
+	}
+	var pkg localPackageJSON
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		return nil, err
+	}
+	return &pkg, nil
+}
+
+func localLifecycleReferencedContent(pkgPath, script string) string {
+	info, err := os.Stat(pkgPath)
+	if err == nil && !info.IsDir() {
+		pkgPath = filepath.Dir(pkgPath)
+	}
+
+	var out strings.Builder
+	parts := strings.Fields(script)
+	for i, part := range parts {
+		cmd := strings.Trim(part, `"'`)
+		if cmd != "node" && cmd != "bash" && cmd != "sh" {
+			continue
+		}
+		if i+1 >= len(parts) {
+			continue
+		}
+		rel := strings.Trim(parts[i+1], `"'`)
+		if rel == "" || strings.HasPrefix(rel, "-") || filepath.IsAbs(rel) {
+			continue
+		}
+		candidate := filepath.Clean(filepath.Join(pkgPath, rel))
+		if !strings.HasPrefix(candidate, filepath.Clean(pkgPath)+string(os.PathSeparator)) {
+			continue
+		}
+		raw, err := os.ReadFile(candidate)
+		if err != nil || len(raw) > 1<<20 {
+			continue
+		}
+		out.WriteByte('\n')
+		out.Write(raw)
+	}
+	return out.String()
 }
 
 func fetchNPMMetadata(client *http.Client, pkg string) (*npmMetadata, error) {
@@ -333,6 +486,17 @@ func ExtractPackageNamesFromCommand(command string) []string {
 	seen := map[string]struct{}{}
 	for _, m := range managers {
 		for _, spec := range extractInstallSpecs(command, m.name, m.ops) {
+			// For local paths, resolve the actual package name from package.json
+			// so that require("<name>") works after npm install.
+			if isLocalPathSpec(spec) {
+				if name := ReadLocalPackageName(spec); name != "" {
+					if _, ok := seen[name]; !ok {
+						seen[name] = struct{}{}
+						all = append(all, name)
+					}
+				}
+				continue
+			}
 			name := normalizeNPMPackageName(spec)
 			if name == "" || isNonRegistryNpmSpec(spec) {
 				continue
@@ -345,4 +509,36 @@ func ExtractPackageNamesFromCommand(command string) []string {
 		}
 	}
 	return all
+}
+
+func HasLocalPackageInstall(command string) bool {
+	type managerOps struct {
+		name string
+		ops  []string
+	}
+	managers := []managerOps{
+		{"npm", []string{"install", "i"}},
+		{"pnpm", []string{"add", "install", "i"}},
+		{"bun", []string{"add"}},
+	}
+	for _, m := range managers {
+		for _, spec := range extractInstallSpecs(command, m.name, m.ops) {
+			if isLocalPathSpec(spec) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func ReadLocalPackageName(spec string) string {
+	pkgPath := localPackagePath(spec)
+	if pkgPath == "" {
+		return ""
+	}
+	pkg, err := readLocalPackageJSON(pkgPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(pkg.Name)
 }

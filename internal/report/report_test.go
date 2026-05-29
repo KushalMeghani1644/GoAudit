@@ -124,13 +124,13 @@ func TestEvaluate_ScoringEdgeCases(t *testing.T) {
 			expectedScore:   80,
 		},
 		{
-			name: "Inconclusive wins over Critical",
+			name: "Critical wins over inconclusive runtime failure",
 			findings: []Finding{
 				{Severity: SeverityCritical, ReasonCode: "CREDENTIAL_READ"},     // Malicious
 				{Severity: SeverityWarning, ReasonCode: "RUNTIME_PREP_FAILURE"}, // Inconclusive
 			},
-			expectedVerdict: VerdictInconclusive,
-			expectedScore:   35,
+			expectedVerdict: VerdictMalicious,
+			expectedScore:   100,
 		},
 	}
 

@@ -32,9 +32,9 @@ func GenerateNodeProbeScript(packages []string, timeoutSec int) string {
 
 	var b strings.Builder
 	b.WriteString("\necho 'GOAUDIT_RUNTIME_META:phase=probe' >&2\n")
-	b.WriteString("cat << 'GOAUDIT_PROBE_EOF' > /tmp/goaudit_probe.js\n")
+	b.WriteString("cat << 'GOAUDIT_PROBE_EOF' > /workspace/.goaudit_probe.js\n")
 	b.WriteString(js + "\n")
 	b.WriteString("GOAUDIT_PROBE_EOF\n")
-	b.WriteString(fmt.Sprintf("timeout %d node /tmp/goaudit_probe.js 2>/dev/null || true\n", timeoutSec+2))
+	b.WriteString(fmt.Sprintf("NODE_PATH=/workspace/node_modules timeout %d node /workspace/.goaudit_probe.js 2>/dev/null || true\n", timeoutSec+2))
 	return b.String()
 }

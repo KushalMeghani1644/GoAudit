@@ -230,7 +230,7 @@ func reasonWeight(reasonCode string) int {
 		return 0
 	case "RUNTIME_MISSING_TOOL", "RUNTIME_PREP_FAILURE":
 		return 60
-	case "TARGET_COMMAND_NOT_FOUND", "TARGET_COMMAND_FAILED":
+	case "TARGET_COMMAND_NOT_FOUND", "TARGET_COMMAND_FAILED", "TARGET_COMMAND_TIMEOUT":
 		return 60
 	case "POLICY_BLOCKED_DOMAIN":
 		return 20
@@ -280,7 +280,8 @@ func Evaluate(findings []Finding, opts EvaluationOptions) (Verdict, int) {
 		if f.ReasonCode == "RUNTIME_MISSING_TOOL" ||
 			f.ReasonCode == "RUNTIME_PREP_FAILURE" ||
 			f.ReasonCode == "TARGET_COMMAND_NOT_FOUND" ||
-			f.ReasonCode == "TARGET_COMMAND_FAILED" {
+			f.ReasonCode == "TARGET_COMMAND_FAILED" ||
+			f.ReasonCode == "TARGET_COMMAND_TIMEOUT" {
 			inconclusive = true
 		}
 		if opts.SuppressExpectedBehavior && isExpectedBehaviorReason(f.ReasonCode) {
@@ -306,7 +307,7 @@ func Evaluate(findings []Finding, opts EvaluationOptions) (Verdict, int) {
 		score = 100
 	}
 
-	if inconclusive {
+	if inconclusive && !malicious {
 		return VerdictInconclusive, 35
 	}
 	if malicious || score >= 80 {

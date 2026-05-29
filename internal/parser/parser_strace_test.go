@@ -53,6 +53,15 @@ func TestDetectsCredentialReadEnv(t *testing.T) {
 	}
 }
 
+func TestDetectsCredentialReadOpenat2(t *testing.T) {
+	f := findByReason(parse(t,
+		`openat2(AT_FDCWD, "/home/sandbox/.kube/config", {flags=O_RDONLY|O_CLOEXEC, resolve=0}, 24) = 3`),
+		"CREDENTIAL_READ")
+	if f == nil {
+		t.Fatal("expected CREDENTIAL_READ for openat2")
+	}
+}
+
 func TestDetectsPersistenceWriteBashrc(t *testing.T) {
 	f := findByReason(parse(t,
 		`openat(AT_FDCWD, "/root/.bashrc", O_WRONLY|O_CREAT) = 3`),
@@ -62,12 +71,30 @@ func TestDetectsPersistenceWriteBashrc(t *testing.T) {
 	}
 }
 
+func TestDetectsPersistenceWriteAuthorizedKeys(t *testing.T) {
+	f := findByReason(parse(t,
+		`openat(AT_FDCWD, "/home/sandbox/.ssh/authorized_keys", O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC, 0666) = 3`),
+		"PERSISTENCE_WRITE")
+	if f == nil {
+		t.Fatal("expected PERSISTENCE_WRITE for authorized_keys")
+	}
+}
+
 func TestDetectsPersistenceWriteCron(t *testing.T) {
 	f := findByReason(parse(t,
 		`openat(AT_FDCWD, "/etc/cron.d/backdoor", O_WRONLY|O_CREAT) = 3`),
 		"PERSISTENCE_WRITE")
 	if f == nil {
 		t.Fatal("expected PERSISTENCE_WRITE for /etc/cron.d/")
+	}
+}
+
+func TestDetectsPersistenceCrontabExec(t *testing.T) {
+	f := findByReason(parse(t,
+		`execve("/usr/bin/crontab", ["crontab", "/tmp/.goaudit-cron"], 0x7ffd3f) = 0`),
+		"PERSISTENCE_WRITE")
+	if f == nil {
+		t.Fatal("expected PERSISTENCE_WRITE for crontab execution")
 	}
 }
 
@@ -139,6 +166,22 @@ func TestNonRootSetuidNotFlagged(t *testing.T) {
 		if f.ReasonCode == "PRIVILEGE_ESCALATION" {
 			t.Fatal("should not flag setuid to non-root")
 		}
+	}
+}
+
+func TestFailedSetuidRootNotFlagged(t *testing.T) {
+	input := "GOAUDIT_RUNTIME_META:phase=target\nsetuid(0) = -1 EPERM (Operation not permitted)"
+	for _, f := range parse(t, input) {
+		if f.ReasonCode == "PRIVILEGE_ESCALATION" {
+			t.Fatal("should not flag failed setuid(0)")
+		}
+	}
+}
+
+func TestTargetTimeoutReasonCode(t *testing.T) {
+	f := findByReason(parse(t, "GOAUDIT_TARGET_EXIT:124"), "TARGET_COMMAND_TIMEOUT")
+	if f == nil {
+		t.Fatal("expected TARGET_COMMAND_TIMEOUT for exit 124")
 	}
 }
 

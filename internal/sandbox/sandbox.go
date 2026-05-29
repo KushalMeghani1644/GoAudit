@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 // SandboxOptions controls sandbox security policies.
@@ -84,6 +85,8 @@ func (s *Sandbox) RunProjectCommand(ctx context.Context, targetCmd, projectPath,
 // StraceTraceSet is the full set of syscalls traced by GoAudit.
 const StraceTraceSet = "open,openat,openat2,connect,execve,chmod,fchmod,fchmodat,rename,unlink,unlinkat,setuid,setgid,setreuid,setregid,socket,bind,listen,symlink,symlinkat,memfd_create,ptrace"
 
+const targetTimeout = "90s"
+
 func (s *Sandbox) run(ctx context.Context, targetCmd, profileName, image string, requiredTools, setupCommands []string, projectPath string) (io.Reader, error) {
 	toolsCheck := ""
 	for _, t := range requiredTools {
@@ -102,7 +105,7 @@ if [ ! -d /project-ro ]; then
 fi
 command -v rsync >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends rsync > /dev/null 2>&1 || { echo "GOAUDIT_RUNTIME_ERROR:prep_failed" >&2; exit 98; }
 mkdir -p /workspace
-rsync -a --exclude node_modules --exclude .git /project-ro/ /workspace/
+rsync -a --exclude node_modules --exclude .git /project-ro/ /workspace/ || { echo "GOAUDIT_RUNTIME_ERROR:project_copy_failed" >&2; exit 98; }
 cd /workspace
 `
 	}
@@ -114,7 +117,7 @@ cd /workspace
 		userSetup = `SANDBOX_HOME="/root"
 `
 		execLine = fmt.Sprintf(
-			`strace -s 256 -f -e trace=%s -o /dev/stderr bash /tmp/target.sh`, StraceTraceSet)
+			`timeout %s strace -s 256 -f -e trace=%s -o /dev/stderr bash /tmp/target.sh`, targetTimeout, StraceTraceSet)
 	} else {
 		userSetup = `SANDBOX_USER=$(getent passwd 1000 2>/dev/null | cut -d: -f1)
 if [ -z "$SANDBOX_USER" ]; then
@@ -125,7 +128,7 @@ SANDBOX_HOME=$(eval echo "~${SANDBOX_USER}")
 `
 		execLine = fmt.Sprintf(
 			`chown -R 1000:1000 /workspace 2>/dev/null || true
-strace -s 256 -f -e trace=%s -o /dev/stderr su "$SANDBOX_USER" -s /bin/bash -c 'cd /workspace && bash /tmp/target.sh'`, StraceTraceSet)
+timeout %s strace -s 256 -f -e trace=%s -o /dev/stderr su "$SANDBOX_USER" -s /bin/bash -c 'cd /workspace && bash /tmp/target.sh'`, targetTimeout, StraceTraceSet)
 	}
 
 	script := fmt.Sprintf(`set -euo pipefail
@@ -176,7 +179,7 @@ fi
 			PidsLimit: &pidsLimit,
 		},
 	}
-	if s.runtime == "runsc" {
+	if s.runtime == "runsc" || projectPath != "" {
 		hostConfig.SecurityOpt = []string{"label=disable"}
 	}
 	if !s.networkEnabled {
@@ -208,7 +211,13 @@ fi
 	if err != nil {
 		return nil, err
 	}
-	return logs, nil
+	pr, pw := io.Pipe()
+	go func() {
+		defer logs.Close()
+		_, copyErr := stdcopy.StdCopy(pw, pw, logs)
+		_ = pw.CloseWithError(copyErr)
+	}()
+	return pr, nil
 }
 
 func (s *Sandbox) Cleanup(ctx context.Context) {
@@ -219,7 +228,7 @@ func (s *Sandbox) Cleanup(ctx context.Context) {
 
 // honeypotScript creates realistic decoy credential files using $SANDBOX_HOME shell variable.
 func honeypotScript() string {
-	return `mkdir -p "${SANDBOX_HOME}/.ssh" "${SANDBOX_HOME}/.aws" "${SANDBOX_HOME}/.kube"
+	return `mkdir -p "${SANDBOX_HOME}/.ssh" "${SANDBOX_HOME}/.aws" "${SANDBOX_HOME}/.kube" || { echo "GOAUDIT_RUNTIME_ERROR:prep_failed" >&2; exit 98; }
 cat > "${SANDBOX_HOME}/.ssh/id_rsa" << 'HONEYPOT_SSH'
 -----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW

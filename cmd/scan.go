@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/KushalMeghani1644/GoAudit-CLI/internal/analyzer"
@@ -43,7 +44,15 @@ var scanCmd = &cobra.Command{
 			probePackages = analyzer.ExtractPackageNamesFromCommand(targetCmd)
 		}
 
+		projectPath := ""
+		if analyzer.HasLocalPackageInstall(targetCmd) {
+			if wd, err := os.Getwd(); err == nil {
+				projectPath = wd
+			}
+		}
+
 		runScanPipeline(context.Background(), targetCmd, profile, reporter, pipelineOptions{
+			projectPath:   projectPath,
 			runAsRoot:     runAsRoot,
 			probePackages: probePackages,
 			skipProbe:     skipProbe,

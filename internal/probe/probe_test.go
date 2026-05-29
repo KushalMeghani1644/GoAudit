@@ -25,6 +25,12 @@ func TestGenerateNodeProbeScriptSinglePackage(t *testing.T) {
 	if !strings.Contains(script, "timeout 17") {
 		t.Fatalf("expected timeout 17 (15+2), got: %s", script)
 	}
+	if !strings.Contains(script, "/workspace/.goaudit_probe.js") {
+		t.Fatal("expected probe to run from /workspace for node_modules resolution")
+	}
+	if !strings.Contains(script, "NODE_PATH=/workspace/node_modules") {
+		t.Fatal("expected NODE_PATH to include installed packages")
+	}
 }
 
 func TestGenerateNodeProbeScriptScopedPackage(t *testing.T) {

@@ -23,14 +23,14 @@ func HasPrepFailure(findings []report.Finding) bool {
 }
 
 var (
-	fsRegex   = regexp.MustCompile(`(?i)(?:open|openat|openat2).*?\"(.*?)\",\s*([A-Z_\|]+)`)
+	fsRegex   = regexp.MustCompile(`(?i)(?:open|openat|openat2).*?\"(.*?)\",\s*(?:\{[^}]*flags=)?([A-Z_\|]+)`)
 	netRegex  = regexp.MustCompile(`connect\(.*sa_family=(?:AF_INET|AF_INET6).*?sin_port=htons\((\d+)\).*?(?:inet_addr\("(.*?)"\)|inet_pton\([^,]+,\s*"(.*?)")`)
 	execRegex = regexp.MustCompile(`(?i)execve\(\"(.*?)\",\s*\[(.*?)\]`)
 	mutRegex  = regexp.MustCompile(`(?i)(?:chmod|fchmod|fchmodat|rename|unlink|unlinkat)\(\"?(.*?)\"?[,)]`)
 	privRegex = regexp.MustCompile(`(?i)(?:setuid|setgid|setreuid|setregid)\((\d+)`)
 
 	readCriticalPaths  = regexp.MustCompile(`(?i)(.*?/\.env|.*?/\.ssh/.*?|.*?/\.aws/.*?|.*?/\.kube/.*?|.*?id_rsa)`)
-	writeCriticalPaths = regexp.MustCompile(`(?i)(.*?/\.bashrc|.*?/\.zshrc|.*?/\.profile|^/etc/crontab|^/etc/cron\..*|^/usr/local/bin/.*|^/usr/bin/.*)`)
+	writeCriticalPaths = regexp.MustCompile(`(?i)(.*?/\.bashrc|.*?/\.zshrc|.*?/\.profile|.*?/\.ssh/authorized_keys|^/etc/crontab|^/etc/cron\..*|^/usr/local/bin/.*|^/usr/bin/.*)`)
 	writeAllowedPaths  = regexp.MustCompile(`(?i)(^/tmp/|^/dev/|^/proc/|^/sys/|^/workspace/|node_modules/|\.npm/|\.cache/|site-packages/|/var/tmp/|/pnpm/store/|pnpm-state\.json|^/usr/local/lib/|^/usr/lib/|(^|/)package(-lock)?\.json$|(^|/)pnpm-lock\.yaml$|(^|/)bun\.lockb?$|\.hm$|^/root/\.config/|^/home/.*?/\.config/|^/root/\.local/|^/home/.*?/\.local/|^/root/\.bun/|^/home/.*?/\.bun/)`)
 
 	execSuspiciousBinaries = regexp.MustCompile(`(?i)(.*?/nc$|.*?/ncat$|.*?/netcat$|^/tmp/.*)`)
@@ -53,6 +53,7 @@ type ParseOptions struct {
 
 func ParseStream(r io.Reader, reporter *report.Reporter, opts ParseOptions) ([]report.Finding, error) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var findings []report.Finding
 	probePhase := false
 	targetPhase := false
@@ -74,6 +75,12 @@ func ParseStream(r io.Reader, reporter *report.Reporter, opts ParseOptions) ([]r
 		}
 		if strings.Contains(line, "GOAUDIT_RUNTIME_ERROR:prep_failed") {
 			f := report.Finding{Severity: report.SeverityWarning, Type: "runtime", ReasonCode: "RUNTIME_PREP_FAILURE", Path: "sandbox prep failed", Confidence: 90}
+			findings = append(findings, f)
+			reporter.PrintLiveFinding(f)
+			continue
+		}
+		if strings.Contains(line, "GOAUDIT_RUNTIME_ERROR:project_copy_failed") {
+			f := report.Finding{Severity: report.SeverityWarning, Type: "runtime", ReasonCode: "RUNTIME_PROJECT_COPY_FAILURE", Path: "project mount", Confidence: 90}
 			findings = append(findings, f)
 			reporter.PrintLiveFinding(f)
 			continue
@@ -101,6 +108,8 @@ func ParseStream(r io.Reader, reporter *report.Reporter, opts ParseOptions) ([]r
 				rc := "TARGET_COMMAND_FAILED"
 				if code == 127 {
 					rc = "TARGET_COMMAND_NOT_FOUND"
+				} else if code == 124 {
+					rc = "TARGET_COMMAND_TIMEOUT"
 				}
 				f := report.Finding{Severity: report.SeverityWarning, Type: "runtime", ReasonCode: rc, Path: strconv.Itoa(code), Confidence: 95, Evidence: "Target command returned non-zero exit status in sandbox"}
 				findings = append(findings, f)
@@ -163,6 +172,16 @@ func ParseStream(r io.Reader, reporter *report.Reporter, opts ParseOptions) ([]r
 		if execMatches := execRegex.FindStringSubmatch(line); len(execMatches) > 2 {
 			bin := execMatches[1]
 			args := execMatches[2]
+			if strings.HasSuffix(bin, "/crontab") || bin == "crontab" {
+				key := "PERSISTENCE_WRITE:crontab"
+				if !seen[key] {
+					seen[key] = true
+					f := report.Finding{Severity: report.SeverityCritical, Type: "fs_write", ReasonCode: "PERSISTENCE_WRITE", Path: bin + " " + args, Confidence: 90, Evidence: "Crontab command executed from sandboxed install"}
+					findings = append(findings, f)
+					reporter.PrintLiveFinding(f)
+				}
+				continue
+			}
 			isCritical := false
 			if execSuspiciousBinaries.MatchString(bin) {
 				isCritical = true
@@ -198,7 +217,7 @@ func ParseStream(r io.Reader, reporter *report.Reporter, opts ParseOptions) ([]r
 
 		// --- Privilege escalation ---
 		if privMatches := privRegex.FindStringSubmatch(line); len(privMatches) > 1 {
-			if privMatches[1] == "0" && targetPhase {
+			if privMatches[1] == "0" && targetPhase && strings.Contains(line, "= 0") {
 				key := "PRIVILEGE_ESCALATION"
 				if !seen[key] {
 					seen[key] = true
