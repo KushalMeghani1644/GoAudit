@@ -99,7 +99,7 @@ func (s *Sandbox) EnsureImage(ctx context.Context) (string, error) {
 }
 
 func (s *Sandbox) InspectImageDigest(ctx context.Context, imageRef string) (string, error) {
-	inspect, _, err := s.cli.ImageInspectWithRaw(ctx, imageRef)
+	inspect, err := s.cli.ImageInspect(ctx, imageRef)
 	if err != nil {
 		return "", err
 	}

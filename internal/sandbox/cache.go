@@ -297,7 +297,7 @@ func (cm *CacheManager) Dir() string {
 
 // LocalImageDigest returns the digest (RepoDigests) of a locally available image.
 func (cm *CacheManager) LocalImageDigest(ctx context.Context, img string) string {
-	inspect, _, err := cm.cli.ImageInspectWithRaw(ctx, img)
+	inspect, err := cm.cli.ImageInspect(ctx, img)
 	if err != nil {
 		return ""
 	}
