@@ -8,3 +8,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       strace curl ca-certificates dnsutils rsync \
  && rm -rf /var/lib/apt/lists/*
+
+# Pre-create honeypot directories for both root and uid-1000 user.
+# gVisor cannot mkdir dotfile dirs at runtime, so they must exist in the image.
+RUN mkdir -p /root/.ssh /root/.aws /root/.kube \
+ && NODE_HOME=$(eval echo ~node 2>/dev/null || echo /home/node) \
+ && mkdir -p "$NODE_HOME/.ssh" "$NODE_HOME/.aws" "$NODE_HOME/.kube" \
+ && chown -R 1000:1000 "$NODE_HOME" 2>/dev/null || true

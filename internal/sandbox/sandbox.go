@@ -492,7 +492,7 @@ func (s *Sandbox) execScript(ctx context.Context, script string) (string, int, e
 
 // honeypotScript creates realistic decoy credential files using $SANDBOX_HOME shell variable.
 func honeypotScript() string {
-	return `mkdir -p "${SANDBOX_HOME}/.ssh" "${SANDBOX_HOME}/.aws" "${SANDBOX_HOME}/.kube" || { echo "GOAUDIT_RUNTIME_ERROR:prep_failed" >&2; exit 98; }
+	return `mkdir -p "${SANDBOX_HOME}/.ssh" "${SANDBOX_HOME}/.aws" "${SANDBOX_HOME}/.kube" 2>/dev/null || true
 cat > "${SANDBOX_HOME}/.ssh/id_rsa" << 'HONEYPOT_SSH'
 -----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
