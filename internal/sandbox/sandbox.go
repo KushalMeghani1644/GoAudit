@@ -141,7 +141,7 @@ func (s *Sandbox) run(ctx context.Context, targetCmd, profileName, image string,
 if [ ! -d /project-ro ]; then
   echo "GOAUDIT_RUNTIME_ERROR:project_mount_missing" >&2; exit 98
 fi
-command -v rsync >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends rsync > /dev/null 2>&1 || { echo "GOAUDIT_RUNTIME_ERROR:prep_failed" >&2; exit 98; }
+command -v rsync >/dev/null 2>&1 || { echo "GOAUDIT_RUNTIME_ERROR:missing_tool:rsync" >&2; exit 97; }
 mkdir -p /workspace
 rsync -a --exclude node_modules --exclude .git /project-ro/ /workspace/ || { echo "GOAUDIT_RUNTIME_ERROR:project_copy_failed" >&2; exit 98; }
 cd /workspace

@@ -47,3 +47,22 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Validate sandbox prerequisites
+        env:
+          SANDBOX_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r image; do
+            [ -n "$image" ] || continue
+            docker pull "$image"
+            docker run --rm "$image" sh -lc '
+              set -eu
+              for bin in bash node npm strace curl rsync dig; do
+                command -v "$bin" >/dev/null 2>&1 || { echo "missing $bin"; exit 1; }
+              done
+              test -f /etc/ssl/certs/ca-certificates.crt || { echo "missing ca-certificates"; exit 1; }
+            '
+          done <<EOF
+          $SANDBOX_TAGS
+          EOF
