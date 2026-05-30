@@ -21,6 +21,9 @@ var (
 	networkMode    string
 	runAsRoot      bool
 	skipProbe      bool
+	noCache        bool
+	warmCache      bool
+	cacheDir       string
 )
 
 type scanProfile struct {
@@ -49,6 +52,16 @@ var scanCmd = &cobra.Command{
 			if wd, err := os.Getwd(); err == nil {
 				projectPath = wd
 			}
+		}
+
+		if warmCache {
+			warmSandboxCache(context.Background(), profile, reporter, pipelineOptions{
+				projectPath:   projectPath,
+				runAsRoot:     runAsRoot,
+				probePackages: probePackages,
+				skipProbe:     skipProbe,
+			})
+			return
 		}
 
 		runScanPipeline(context.Background(), targetCmd, profile, reporter, pipelineOptions{
@@ -89,5 +102,8 @@ func init() {
 	scanCmd.Flags().StringVar(&networkMode, "network", "auto", "Network policy: auto (based on command type), on, or off")
 	scanCmd.Flags().BoolVar(&runAsRoot, "run-as-root", false, "Run the target command as root inside the sandbox")
 	scanCmd.Flags().BoolVar(&skipProbe, "skip-probe", false, "Skip runtime behavior probe after install")
+	scanCmd.Flags().BoolVar(&noCache, "no-cache", false, "Disable sandbox caching for this run (no warm container is stored)")
+	scanCmd.Flags().BoolVar(&warmCache, "warm-cache", false, "Prepare and cache the sandbox without running a scan")
+	scanCmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Custom directory for sandbox cache (or set GOAUDIT_CACHE_DIR)")
 	rootCmd.AddCommand(scanCmd)
 }

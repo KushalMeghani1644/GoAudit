@@ -108,6 +108,17 @@ var scanProjectCmd = &cobra.Command{
 		}
 
 		profile := profileForManager(proj.Manager)
+		if warmCache {
+			warmSandboxCache(context.Background(), profile, reporter, pipelineOptions{
+				projectPath:     proj.Root,
+				scanProjectMode: true,
+				runAsRoot:       runAsRoot,
+				probePackages:   probePackages,
+				skipProbe:       skipProbe,
+			})
+			return
+		}
+
 		runScanPipeline(context.Background(), installCmd, profile, reporter, pipelineOptions{
 			projectPath:     proj.Root,
 			skipStatic:      true,
@@ -152,9 +163,12 @@ func init() {
 	scanProjectCmd.Flags().StringVar(&networkMode, "network", "auto", "Network policy: auto (based on command type), on, or off")
 	scanProjectCmd.Flags().BoolVar(&runAsRoot, "run-as-root", false, "Run the target command as root inside the sandbox (default: non-root)")
 	scanProjectCmd.Flags().BoolVar(&skipProbe, "skip-probe", false, "Skip runtime behavior probe after install")
+	scanProjectCmd.Flags().BoolVar(&warmCache, "warm-cache", false, "Prepare and cache the sandbox without running a scan")
 	scanProjectCmd.Flags().BoolVar(&probeAll, "probe-all", false, "Probe all direct dependencies, not just suspicious ones")
 	scanProjectCmd.Flags().StringVar(&upgradeMode, "upgrade-mode", "refresh-lock", "Upgrade strategy: refresh-lock, ncu, or update")
 	scanProjectCmd.Flags().StringVar(&managerOverride, "manager", "", "Force package manager: npm, pnpm, or bun")
 	scanProjectCmd.Flags().BoolVar(&includeTransitive, "include-transitive", false, "Also registry-check packages from package-lock.json")
+	scanProjectCmd.Flags().BoolVar(&noCache, "no-cache", false, "Disable sandbox caching for this run (no warm container is stored)")
+	scanProjectCmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Custom directory for sandbox cache (or set GOAUDIT_CACHE_DIR)")
 	rootCmd.AddCommand(scanProjectCmd)
 }

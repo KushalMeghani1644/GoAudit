@@ -119,9 +119,64 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 
 	reporter.UpdateProgress(fmt.Sprintf("Preparing sandbox image %s...", profile.Image))
 
+	// --- Cache integration ---
+	var cache *sandbox.CacheManager
+	usedCache := false
+	forcedRuncOffline := false
+	if !noCache {
+		cache, err = sandbox.NewCacheManager(cacheDir)
+		if err != nil && !ciMode {
+			fmt.Printf("\033[33m[WARNING] Could not initialize cache: %v. Running without cache.\033[0m\r\n", err)
+		}
+	}
+	if cache != nil {
+		defer cache.Close()
+	}
+
+	// Try to use cached sandbox if available.
+	if cache != nil && opts.projectPath == "" {
+		cached := cache.Lookup(ctx, s.Runtime(), profile.Name)
+		if cached != nil {
+			if cached.Image != profile.Image {
+				cache.Invalidate(ctx, cached.Runtime, profile.Name)
+				cached = nil
+			}
+		}
+		if cached != nil {
+			refresh, offline := cache.ShouldRefreshLatest(ctx, cached)
+			if refresh {
+				if offline && cached.Runtime == "runsc" && isNodeProfile(profile.Name) {
+					forcedRuncOffline = true
+				}
+				cache.Invalidate(ctx, cached.Runtime, profile.Name)
+				cached = nil
+			}
+		}
+		if cached != nil {
+			if !cache.ImageChanged(ctx, cached.Image, cached.ImageDigest) {
+				reporter.UpdateProgress("Using cached sandbox...")
+				s.SetContainerID(cached.ContainerID)
+				s.SetImage(cached.Image)
+				if cached.Runtime == "runsc" {
+					s.SetRuntime("runsc")
+				} else {
+					s.SetRuntime("")
+				}
+				cache.TouchLastUsed(cached.Runtime, profile.Name)
+				usedCache = true
+				// Update profile image to match the cached one.
+				profile.Image = cached.Image
+			} else {
+				// Image changed, invalidate old cache.
+				cache.Invalidate(ctx, cached.Runtime, profile.Name)
+			}
+		}
+	}
+
 	imageFallbackToRunc := false
-	if err := s.EnsureImage(ctx); err != nil {
-		if s.Runtime() == "runsc" && isNodeProfile(profile.Name) && profile.Image == sandbox.NodeSandboxImage {
+
+	if !usedCache {
+		if forcedRuncOffline && s.Runtime() == "runsc" && isNodeProfile(profile.Name) && profile.Image == sandbox.NodeSandboxImage {
 			imageFallbackToRunc = true
 			fallback := report.Finding{
 				Severity:   report.SeverityWarning,
@@ -129,26 +184,65 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 				ReasonCode: "RUNSC_FALLBACK_RUNC",
 				Path:       "sandbox",
 				Confidence: 85,
-				Evidence:   fmt.Sprintf("could not prepare gVisor sandbox image %s; retried scan using runc: %v", sandbox.NodeSandboxImage, err),
+				Evidence:   "No internet available, falling back to runc",
 			}
 			findings = append(findings, fallback)
 			reporter.PrintLiveFinding(fallback)
 			if !ciMode {
 				reporter.StopProgress()
-				fmt.Printf("\033[33m[WARNING] Could not prepare gVisor sandbox image %s. Retrying with runc.\033[0m\r\n", sandbox.NodeSandboxImage)
+				fmt.Printf("\033[33m[WARNING] No internet available, falling back to runc.\033[0m\r\n")
 				reporter.StartProgress("Retrying with runc...")
 			}
 			s.SetRuntime("")
 			profile.Image = sandbox.DefaultNodeImage
 			s.SetImage(profile.Image)
-			reporter.UpdateProgress(fmt.Sprintf("Preparing sandbox image %s...", profile.Image))
-			if err := s.EnsureImage(ctx); err != nil {
+		}
+		if _, err := s.EnsureImage(ctx); err != nil {
+			if s.Runtime() == "runsc" && isNodeProfile(profile.Name) && profile.Image == sandbox.NodeSandboxImage {
+				imageFallbackToRunc = true
+				fallback := report.Finding{
+					Severity:   report.SeverityWarning,
+					Type:       "runtime",
+					ReasonCode: "RUNSC_FALLBACK_RUNC",
+					Path:       "sandbox",
+					Confidence: 85,
+					Evidence:   fmt.Sprintf("could not prepare gVisor sandbox image %s; no internet available, falling back to runc: %v", sandbox.NodeSandboxImage, err),
+				}
+				findings = append(findings, fallback)
+				reporter.PrintLiveFinding(fallback)
+				if !ciMode {
+					reporter.StopProgress()
+					fmt.Printf("\033[33m[WARNING] Could not prepare gVisor sandbox image %s. No internet available, falling back to runc.\033[0m\r\n", sandbox.NodeSandboxImage)
+					reporter.StartProgress("Retrying with runc...")
+				}
+				s.SetRuntime("")
+				profile.Image = sandbox.DefaultNodeImage
+				s.SetImage(profile.Image)
+				reporter.UpdateProgress(fmt.Sprintf("Preparing sandbox image %s...", profile.Image))
+
+				// Check runc cache before pulling again.
+				if cache != nil {
+					runcCached := cache.Lookup(ctx, "", profile.Name)
+					if runcCached != nil && runcCached.Image == profile.Image && !cache.ImageChanged(ctx, runcCached.Image, runcCached.ImageDigest) {
+						reporter.UpdateProgress("Using cached runc sandbox...")
+						s.SetContainerID(runcCached.ContainerID)
+						s.SetImage(runcCached.Image)
+						profile.Image = runcCached.Image
+						cache.TouchLastUsed("", profile.Name)
+						usedCache = true
+					}
+				}
+
+				if !usedCache {
+					if _, err := s.EnsureImage(ctx); err != nil {
+						reporter.StopProgress()
+						reporter.Fatalf("Failed to prepare image after runc fallback: %v\n", err)
+					}
+				}
+			} else {
 				reporter.StopProgress()
-				reporter.Fatalf("Failed to prepare image after runc fallback: %v\n", err)
+				reporter.Fatalf("Failed to prepare image: %v\n", err)
 			}
-		} else {
-			reporter.StopProgress()
-			reporter.Fatalf("Failed to prepare image: %v\n", err)
 		}
 	}
 
@@ -162,16 +256,48 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 
 	registryIPs := resolveRegistryIPs(profile.Name)
 
-	dynamicFindings, sandboxRuntime, err := runSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
-	if err != nil {
-		s.Cleanup(ctx)
-		reporter.StopProgress()
-		reporter.Fatalf("Failed to run command: %v\n", err)
+	// If using cached sandbox, warm-start via ExecScan; otherwise do the normal cold path.
+	var dynamicFindings []report.Finding
+	var sandboxRuntime string
+
+	if usedCache {
+		dynamicFindings, sandboxRuntime, err = runCachedSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
+		if err != nil {
+			// Cache might be stale; invalidate and fall through to cold path.
+			if cache != nil {
+				cache.Invalidate(ctx, s.Runtime(), profile.Name)
+			}
+			s.Cleanup(ctx, false)
+			if !ciMode {
+				reporter.StopProgress()
+				fmt.Print("\033[33m[WARNING] Cached sandbox failed. Creating fresh sandbox.\033[0m\r\n")
+				reporter.StartProgress("Running in fresh sandbox...")
+			}
+			usedCache = false
+			// Pull image and do a cold run.
+			if _, err := s.EnsureImage(ctx); err != nil {
+				reporter.StopProgress()
+				reporter.Fatalf("Failed to prepare image: %v\n", err)
+			}
+			dynamicFindings, sandboxRuntime, err = runSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
+			if err != nil {
+				s.Cleanup(ctx, false)
+				reporter.StopProgress()
+				reporter.Fatalf("Failed to run command: %v\n", err)
+			}
+		}
+	} else {
+		dynamicFindings, sandboxRuntime, err = runSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
+		if err != nil {
+			s.Cleanup(ctx, false)
+			reporter.StopProgress()
+			reporter.Fatalf("Failed to run command: %v\n", err)
+		}
 	}
 
 	// If gVisor prep failed (often apt-get under runsc), retry once with runc.
 	if s.Runtime() == "runsc" && parser.HasPrepFailure(dynamicFindings) {
-		s.Cleanup(ctx)
+		s.Cleanup(ctx, false)
 		if !ciMode {
 			reporter.StopProgress()
 			fmt.Print("\033[33m[WARNING] gVisor sandbox prep failed (tools/apt). Retrying with runc; npm install behavior is still scanned.\033[0m\r\n")
@@ -189,9 +315,36 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 		reporter.PrintLiveFinding(fallback)
 
 		s.SetRuntime("")
-		dynamicFindings, sandboxRuntime, err = runSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
+		if isNodeProfile(profile.Name) && profile.Image == sandbox.NodeSandboxImage {
+			profile.Image = sandbox.DefaultNodeImage
+			s.SetImage(profile.Image)
+		}
+
+		usedRuncCache := false
+		if cache != nil {
+			runcCached := cache.Lookup(ctx, "", profile.Name)
+			if runcCached != nil && runcCached.Image == profile.Image && !cache.ImageChanged(ctx, runcCached.Image, runcCached.ImageDigest) {
+				reporter.UpdateProgress("Using cached runc sandbox...")
+				s.SetContainerID(runcCached.ContainerID)
+				s.SetImage(runcCached.Image)
+				profile.Image = runcCached.Image
+				cache.TouchLastUsed("", profile.Name)
+				usedRuncCache = true
+			}
+		}
+		if usedRuncCache {
+			dynamicFindings, sandboxRuntime, err = runCachedSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
+			usedCache = true
+		} else {
+			if _, err := s.EnsureImage(ctx); err != nil {
+				s.Cleanup(ctx, false)
+				reporter.StopProgress()
+				reporter.Fatalf("Failed to prepare image after runc fallback: %v\n", err)
+			}
+			dynamicFindings, sandboxRuntime, err = runSandboxAndParse(ctx, s, profile, finalCmd, opts, registryIPs, reporter)
+		}
 		if err != nil {
-			s.Cleanup(ctx)
+			s.Cleanup(ctx, false)
 			reporter.StopProgress()
 			reporter.Fatalf("Failed to run command after runc fallback: %v\n", err)
 		}
@@ -199,7 +352,35 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 
 	findings = append(findings, dynamicFindings...)
 
-	s.Cleanup(ctx)
+	// Cache the warm container for next time (if caching is enabled and we did a cold run).
+	if cache != nil && !noCache && !usedCache && opts.projectPath == "" {
+		// Warm-prepare a fresh container for the cache.
+		reporter.UpdateProgress("Warming sandbox cache...")
+		warmSandbox, warmErr := sandbox.NewSandbox(ctx, s.Image(), sandbox.SandboxOptions{
+			RunAsRoot: opts.runAsRoot,
+		})
+		if warmErr == nil {
+			warmSandbox.SetRuntime(s.Runtime())
+			warmSandbox.SetImage(s.Image())
+			if warmErr = warmSandbox.PrepareWarm(ctx, profile.Name, s.Image(), profile.RequiredTools, profile.SetupCommands); warmErr == nil {
+				digest, digestErr := warmSandbox.InspectImageDigest(ctx, s.Image())
+				if digestErr != nil {
+					digest = cache.LocalImageDigest(ctx, s.Image())
+				}
+				if storeErr := cache.Store(ctx, s.Runtime(), profile.Name, warmSandbox.ContainerID(), s.Image(), digest); storeErr != nil && !ciMode {
+					fmt.Printf("\033[33m[WARNING] Could not save cache: %v\033[0m\r\n", storeErr)
+				}
+			} else {
+				warmSandbox.Cleanup(ctx, false)
+				if !ciMode {
+					fmt.Printf("\033[33m[WARNING] Could not warm cache: %v\033[0m\r\n", warmErr)
+				}
+			}
+		}
+	}
+
+	// Cleanup the scan container (not the cached warm container).
+	s.Cleanup(ctx, usedCache)
 
 	if sandboxRuntime == "" {
 		sandboxRuntime = "runc"
@@ -212,6 +393,117 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 		SuppressExpectedBehavior: isNodeProfile(profile.Name),
 	}
 	reporter.Report(findings, meta)
+}
+
+func warmSandboxCache(ctx context.Context, profile scanProfile, reporter *report.Reporter, opts pipelineOptions) {
+	if noCache {
+		reporter.Fatalf("--warm-cache cannot be used with --no-cache\n")
+	}
+
+	reporter.StartProgress("Preparing sandbox cache...")
+
+	cache, err := sandbox.NewCacheManager(cacheDir)
+	if err != nil {
+		reporter.StopProgress()
+		reporter.Fatalf("Failed to initialize cache: %v\n", err)
+	}
+	defer cache.Close()
+
+	s, err := sandbox.NewSandbox(ctx, profile.Image, sandbox.SandboxOptions{
+		NetworkEnabled: true,
+		RunAsRoot:      opts.runAsRoot,
+	})
+	if err != nil {
+		reporter.StopProgress()
+		reporter.Fatalf("Failed to initialize sandbox: %v\n", err)
+	}
+
+	if shouldUsePublishedNodeSandbox(s.Runtime(), profile) {
+		profile.Image = sandbox.NodeSandboxImage
+		s.SetImage(profile.Image)
+	}
+
+	if cached := cache.Lookup(ctx, s.Runtime(), profile.Name); cached != nil {
+		refresh, offline := cache.ShouldRefreshLatest(ctx, cached)
+		if refresh {
+			cache.Invalidate(ctx, cached.Runtime, profile.Name)
+			cached = nil
+			if offline && s.Runtime() == "runsc" && isNodeProfile(profile.Name) {
+				if !ciMode {
+					reporter.StopProgress()
+					fmt.Printf("\033[33m[WARNING] No internet available, falling back to runc.\033[0m\r\n")
+					reporter.StartProgress("Preparing runc sandbox cache...")
+				}
+				s.SetRuntime("")
+				profile.Image = sandbox.DefaultNodeImage
+				s.SetImage(profile.Image)
+			}
+		}
+		if cached != nil && cached.Image == profile.Image && !cache.ImageChanged(ctx, cached.Image, cached.ImageDigest) {
+			reporter.StopProgress()
+			if !ciMode {
+				rt := cached.Runtime
+				if rt == "" {
+					rt = "runc"
+				}
+				fmt.Printf("Sandbox cache is already warm for %s (%s).\n", profile.Name, rt)
+			}
+			return
+		}
+	}
+
+	reporter.UpdateProgress(fmt.Sprintf("Preparing sandbox image %s...", profile.Image))
+	if _, err := s.EnsureImage(ctx); err != nil {
+		if s.Runtime() == "runsc" && isNodeProfile(profile.Name) && profile.Image == sandbox.NodeSandboxImage {
+			if !ciMode {
+				reporter.StopProgress()
+				fmt.Printf("\033[33m[WARNING] Could not prepare gVisor sandbox image %s. No internet available, falling back to runc.\033[0m\r\n", sandbox.NodeSandboxImage)
+				reporter.StartProgress("Preparing runc sandbox cache...")
+			}
+			s.SetRuntime("")
+			profile.Image = sandbox.DefaultNodeImage
+			s.SetImage(profile.Image)
+			if cached := cache.Lookup(ctx, "", profile.Name); cached != nil && cached.Image == profile.Image && !cache.ImageChanged(ctx, cached.Image, cached.ImageDigest) {
+				reporter.StopProgress()
+				if !ciMode {
+					fmt.Printf("Sandbox cache is already warm for %s (runc).\n", profile.Name)
+				}
+				return
+			}
+			if _, err := s.EnsureImage(ctx); err != nil {
+				reporter.StopProgress()
+				reporter.Fatalf("Failed to prepare image after runc fallback: %v\n", err)
+			}
+		} else {
+			reporter.StopProgress()
+			reporter.Fatalf("Failed to prepare image: %v\n", err)
+		}
+	}
+
+	reporter.UpdateProgress("Warming sandbox cache...")
+	if err := s.PrepareWarm(ctx, profile.Name, s.Image(), profile.RequiredTools, profile.SetupCommands); err != nil {
+		s.Cleanup(ctx, false)
+		reporter.StopProgress()
+		reporter.Fatalf("Failed to warm cache: %v\n", err)
+	}
+	digest, digestErr := s.InspectImageDigest(ctx, s.Image())
+	if digestErr != nil {
+		digest = cache.LocalImageDigest(ctx, s.Image())
+	}
+	if err := cache.Store(ctx, s.Runtime(), profile.Name, s.ContainerID(), s.Image(), digest); err != nil {
+		s.Cleanup(ctx, false)
+		reporter.StopProgress()
+		reporter.Fatalf("Failed to save cache: %v\n", err)
+	}
+
+	reporter.StopProgress()
+	if !ciMode {
+		rt := s.Runtime()
+		if rt == "" {
+			rt = "runc"
+		}
+		fmt.Printf("Warmed sandbox cache for %s (%s).\n", profile.Name, rt)
+	}
 }
 
 func runSandboxAndParse(
@@ -234,6 +526,39 @@ func runSandboxAndParse(
 	} else {
 		logStream, err = s.RunCommand(ctx, finalCmd, profile.Name, profile.Image, profile.RequiredTools, profile.SetupCommands)
 	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	dynamicFindings, err := parser.ParseStream(logStream, reporter, parser.ParseOptions{
+		KnownRegistryIPs: registryIPs,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+
+	runtime := s.Runtime()
+	if runtime == "" {
+		runtime = "runc"
+	}
+	return dynamicFindings, runtime, nil
+}
+
+// runCachedSandboxAndParse runs a scan on a cached (warm) container via ExecScan.
+func runCachedSandboxAndParse(
+	ctx context.Context,
+	s *sandbox.Sandbox,
+	profile scanProfile,
+	finalCmd string,
+	opts pipelineOptions,
+	registryIPs map[string]string,
+	reporter *report.Reporter,
+) ([]report.Finding, string, error) {
+	if len(opts.probePackages) > 0 && !opts.skipProbe {
+		reporter.UpdateProgress(fmt.Sprintf("Running in cached sandbox + probing %d package(s)...", len(opts.probePackages)))
+	}
+
+	logStream, err := s.ExecScan(ctx, finalCmd, profile.Name, profile.Image, opts.projectPath)
 	if err != nil {
 		return nil, "", err
 	}
