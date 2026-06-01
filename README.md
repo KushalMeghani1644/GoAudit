@@ -14,7 +14,7 @@ go install github.com/KushalMeghani1644/GoAudit-CLI/cmd/goaudit@latest
 
 ## Usage
 
-<video src="assets/demo.webm" autoplay loop muted width="100%"></video>
+<img src="assets/goaudit-demo.gif" alt="Demo">
 
 ### Scan a command
 
