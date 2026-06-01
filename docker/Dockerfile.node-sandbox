@@ -9,6 +9,12 @@ RUN apt-get update \
       strace curl ca-certificates dnsutils rsync \
  && rm -rf /var/lib/apt/lists/*
 
+# Enable pnpm via corepack (ships with Node).
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Install bun globally so it is available for all users.
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
+
 # Pre-create honeypot directories for both root and uid-1000 user.
 # gVisor cannot mkdir dotfile dirs at runtime, so they must exist in the image.
 RUN mkdir -p /root/.ssh /root/.aws /root/.kube \

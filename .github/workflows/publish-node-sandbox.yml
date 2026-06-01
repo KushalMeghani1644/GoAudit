@@ -58,7 +58,7 @@ jobs:
             docker pull "$image"
             docker run --rm "$image" sh -lc '
               set -eu
-              for bin in bash node npm strace curl rsync dig; do
+              for bin in bash node npm pnpm bun strace curl rsync dig; do
                 command -v "$bin" >/dev/null 2>&1 || { echo "missing $bin"; exit 1; }
               done
               test -f /etc/ssl/certs/ca-certificates.crt || { echo "missing ca-certificates"; exit 1; }

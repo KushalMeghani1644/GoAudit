@@ -194,7 +194,7 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 				reporter.StartProgress("Retrying with runc...")
 			}
 			s.SetRuntime("")
-			profile.Image = sandbox.DefaultNodeImage
+			profile.Image = defaultImageForProfile(profile.Name)
 			s.SetImage(profile.Image)
 		}
 		if _, err := s.EnsureImage(ctx); err != nil {
@@ -216,7 +216,7 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 					reporter.StartProgress("Retrying with runc...")
 				}
 				s.SetRuntime("")
-				profile.Image = sandbox.DefaultNodeImage
+				profile.Image = defaultImageForProfile(profile.Name)
 				s.SetImage(profile.Image)
 				reporter.UpdateProgress(fmt.Sprintf("Preparing sandbox image %s...", profile.Image))
 
@@ -316,7 +316,7 @@ func runScanPipeline(ctx context.Context, targetCmd string, profile scanProfile,
 
 		s.SetRuntime("")
 		if isNodeProfile(profile.Name) && profile.Image == sandbox.NodeSandboxImage {
-			profile.Image = sandbox.DefaultNodeImage
+			profile.Image = defaultImageForProfile(profile.Name)
 			s.SetImage(profile.Image)
 		}
 
@@ -452,7 +452,7 @@ func warmSandboxCache(ctx context.Context, profile scanProfile, reporter *report
 					reporter.StartProgress("Preparing runc sandbox cache...")
 				}
 				s.SetRuntime("")
-				profile.Image = sandbox.DefaultNodeImage
+				profile.Image = defaultImageForProfile(profile.Name)
 				s.SetImage(profile.Image)
 			}
 		}
@@ -478,7 +478,7 @@ func warmSandboxCache(ctx context.Context, profile scanProfile, reporter *report
 				reporter.StartProgress("Preparing runc sandbox cache...")
 			}
 			s.SetRuntime("")
-			profile.Image = sandbox.DefaultNodeImage
+			profile.Image = defaultImageForProfile(profile.Name)
 			s.SetImage(profile.Image)
 			if cached := cache.Lookup(ctx, "", profile.Name, opts.runAsRoot, networkEnabled); cached != nil && cached.Image == profile.Image && !cache.ImageChanged(ctx, cached.Image, cached.ImageDigest) {
 				reporter.StopProgress()
@@ -603,7 +603,18 @@ func isNodeProfile(name string) bool {
 }
 
 func shouldUsePublishedNodeSandbox(runtime string, profile scanProfile) bool {
-	return runtime == "runsc" && isNodeProfile(profile.Name) && profile.Image == sandbox.DefaultNodeImage
+	if runtime != "runsc" || !isNodeProfile(profile.Name) {
+		return false
+	}
+	return profile.Image == sandbox.DefaultNodeImage || profile.Image == sandbox.DefaultBunImage
+}
+
+// defaultImageForProfile returns the stock runc fallback image for the given profile.
+func defaultImageForProfile(profileName string) string {
+	if profileName == "bun" {
+		return sandbox.DefaultBunImage
+	}
+	return sandbox.DefaultNodeImage
 }
 
 func profileForManager(manager string) scanProfile {
