@@ -6,11 +6,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      strace curl ca-certificates dnsutils rsync \
+      strace curl ca-certificates dnsutils rsync unzip \
  && rm -rf /var/lib/apt/lists/*
 
-# Enable pnpm via corepack (ships with Node).
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Install pnpm globally.
+RUN npm install -g pnpm
 
 # Install bun globally so it is available for all users.
 RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
